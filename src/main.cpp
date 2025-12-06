@@ -9,7 +9,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 
-// Tokenizer supporting quotes/escape logic
+// Tokenizer supporting quoting & escaping
 std::vector<std::string> tokenize(const std::string& input) {
     std::vector<std::string> tokens;
     std::string current;
@@ -84,23 +84,36 @@ int main() {
         std::string input;
         if (!std::getline(std::cin, input)) break;
 
-        // Tokenize
         std::vector<std::string> parts = tokenize(input);
         if (parts.empty()) continue;
 
-        // Detect stdout redirect ( > or 1> )
+        // ====================================================================================
+        // Redirection Detection
+        // ====================================================================================
+
         std::string redirectOutFile;
+        bool appendOut = false;
+
+        // detect > or >>
         for (size_t i = 0; i < parts.size(); i++) {
             if (parts[i] == ">" || parts[i] == "1>") {
                 if (i + 1 < parts.size()) {
                     redirectOutFile = parts[i + 1];
+                    appendOut = false;
+                    parts.erase(parts.begin() + i, parts.begin() + i + 2);
+                }
+                break;
+            }
+            if (parts[i] == ">>" || parts[i] == "1>>") {
+                if (i + 1 < parts.size()) {
+                    redirectOutFile = parts[i + 1];
+                    appendOut = true;
                     parts.erase(parts.begin() + i, parts.begin() + i + 2);
                 }
                 break;
             }
         }
 
-        // Detect stderr redirect ( 2> )
         std::string redirectErrFile;
         for (size_t i = 0; i < parts.size(); i++) {
             if (parts[i] == "2>") {
@@ -112,23 +125,32 @@ int main() {
             }
         }
 
-        // Redirect stdout if needed
+        // ====================================================================================
+        // Apply Redirections (stdout + stderr)
+        // ====================================================================================
+
         int savedStdout = -1;
         if (!redirectOutFile.empty()) {
             savedStdout = dup(STDOUT_FILENO);
-            int fd = open(redirectOutFile.c_str(),
-                          O_CREAT | O_WRONLY | O_TRUNC,
-                          0644);
+
+            int flags = O_CREAT | O_WRONLY;
+            if (appendOut)
+                flags |= O_APPEND;
+            else
+                flags |= O_TRUNC;
+
+            int fd = open(redirectOutFile.c_str(), flags, 0644);
+
             if (fd >= 0) {
                 dup2(fd, STDOUT_FILENO);
                 close(fd);
             }
         }
 
-        // Redirect stderr if needed
         int savedStderr = -1;
         if (!redirectErrFile.empty()) {
             savedStderr = dup(STDERR_FILENO);
+
             int fd = open(redirectErrFile.c_str(),
                           O_CREAT | O_WRONLY | O_TRUNC,
                           0644);
@@ -138,7 +160,9 @@ int main() {
             }
         }
 
-        // ===== Builtins =====
+        // ====================================================================================
+        // Builtins
+        // ====================================================================================
 
         if (parts.size() == 1 && parts[0] == "exit") {
             goto restore_and_exit;
@@ -222,7 +246,9 @@ int main() {
             goto restore_std;
         }
 
-        // ===== External Execution =====
+        // ====================================================================================
+        // External Execution
+        // ====================================================================================
 
         {
             std::vector<char*> args;
@@ -256,7 +282,6 @@ int main() {
                             } else {
                                 waitpid(pid, nullptr, 0);
                             }
-
                             executed = true;
                             break;
                         }
@@ -305,6 +330,7 @@ restore_and_exit:
 
     return 0;
 }
+
 
 
 
