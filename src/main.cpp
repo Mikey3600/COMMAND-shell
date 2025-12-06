@@ -9,8 +9,8 @@
 #include <sys/wait.h>
 
 // Tokenizer supporting:
-// - single quotes: literal content including backslashes
-// - double quotes: \" and \\ escaping, others literal
+// - single quotes (all literal)
+// - double quotes (\" and \\ escape, others literal)
 // - backslash escaping outside quotes
 std::vector<std::string> tokenize(const std::string& input) {
     std::vector<std::string> tokens;
@@ -29,7 +29,7 @@ std::vector<std::string> tokenize(const std::string& input) {
             continue;
         }
 
-        // Double quote handling
+        // Handle escape inside double quotes
         if (inDoubleQuote) {
             if (c == '\\') {
                 if (i + 1 < input.size()) {
@@ -45,7 +45,7 @@ std::vector<std::string> tokenize(const std::string& input) {
             }
         }
 
-        // Start escape outside quotes
+        // Start escape (only outside quotes)
         if (c == '\\' && !inSingleQuote && !inDoubleQuote) {
             escape = true;
             continue;
@@ -63,7 +63,7 @@ std::vector<std::string> tokenize(const std::string& input) {
             continue;
         }
 
-        // Whitespace delimiter
+        // Token split on whitespace outside quotes
         if (std::isspace(static_cast<unsigned char>(c)) && !inSingleQuote && !inDoubleQuote) {
             if (!current.empty()) {
                 tokens.push_back(current);
@@ -136,7 +136,7 @@ int main() {
             continue;
         }
 
-        // echo builtin with quoting rules
+        // echo builtin
         if (input.rfind("echo ", 0) == 0) {
             std::vector<std::string> parts = tokenize(input.substr(5));
 
@@ -198,6 +198,9 @@ int main() {
         std::vector<std::string> parts = tokenize(input);
         if (parts.empty()) continue;
 
+        // -------- KEY CHANGE --------
+        // Because tokenizer already stripped quotes,
+        // quoted executable names simply work here.
         std::vector<char*> args;
         for (auto& s : parts) {
             args.push_back(strdup(s.c_str()));
@@ -227,7 +230,7 @@ int main() {
 
                         if (pid == 0) {
                             execv(fullPath.c_str(), args.data());
-                            exit(1);
+                            exit(1);  // execv failed
                         } else {
                             waitpid(pid, nullptr, 0);
                         }
