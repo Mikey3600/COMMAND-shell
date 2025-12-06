@@ -323,6 +323,15 @@ void run_history_builtin(const std::vector<std::string> &parts) {
         }
 
         if (option == "-a") {
+            // FIX: If history is empty in memory, but the file exists, we must read the file 
+            // first to correctly set history_offset, otherwise append_history won't work correctly.
+            // Using access() to check file existence.
+            if (history_length == 0 && access(path.c_str(), F_OK) == 0) {
+                if (read_history(path.c_str()) == 0) {
+                    history_offset = history_length; // Now history_offset equals the initial size
+                }
+            }
+            
             // Append only the new entries since the last I/O operation (tracked by history_offset).
             int entries_to_append = history_length - history_offset;
             
@@ -615,7 +624,7 @@ int main() {
         std::string input(line);
         
         // Add to history BEFORE parsing/execution.
-        // FIX RE-APPLIED: Skip adding the command if it's empty or starts with "history"
+        // FIX: Skip adding the command if it's empty or starts with "history"
         if (!input.empty()) {
             std::string trimmed_input = input;
             trimmed_input.erase(trimmed_input.begin(), std::find_if(trimmed_input.begin(), trimmed_input.end(), [](unsigned char ch){
