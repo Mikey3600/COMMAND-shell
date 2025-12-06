@@ -4,34 +4,57 @@
 #include <sstream>
 #include <vector>
 #include <cstring>     // strdup()
+#include <cctype>      // std::isspace
 #include <unistd.h>    // fork(), execv(), access(), X_OK, getcwd(), chdir()
 #include <sys/wait.h>  // waitpid()
 
-// Tokenizer supporting single + double quotes
+// Tokenizer supporting:
+// - single quotes: '...'
+// - double quotes: "..."
+// - backslash escaping outside quotes: \x
 std::vector<std::string> tokenize(const std::string& input) {
     std::vector<std::string> tokens;
     std::string current;
     bool inSingleQuote = false;
     bool inDoubleQuote = false;
+    bool escape = false;
 
     for (size_t i = 0; i < input.size(); i++) {
         char c = input[i];
 
-        if (c == '\'' && !inDoubleQuote) {
+        if (escape) {
+            // Take this character literally
+            current.push_back(c);
+            escape = false;
+        }
+        else if (c == '\\' && !inSingleQuote && !inDoubleQuote) {
+            // Start escape for next character
+            escape = true;
+        }
+        else if (c == '\'' && !inDoubleQuote) {
+            // Toggle single-quote mode
             inSingleQuote = !inSingleQuote;
         }
         else if (c == '"' && !inSingleQuote) {
+            // Toggle double-quote mode
             inDoubleQuote = !inDoubleQuote;
         }
-        else if (std::isspace(c) && !inSingleQuote && !inDoubleQuote) {
+        else if (std::isspace(static_cast<unsigned char>(c)) && !inSingleQuote && !inDoubleQuote) {
+            // Delimiter outside quotes
             if (!current.empty()) {
                 tokens.push_back(current);
                 current.clear();
             }
         }
         else {
+            // Normal character
             current.push_back(c);
         }
+    }
+
+    if (escape) {
+        // Trailing backslash with nothing after it: treat '\' literally
+        current.push_back('\\');
     }
 
     if (!current.empty()) {
@@ -71,7 +94,7 @@ int main() {
         if (input.rfind("cd ", 0) == 0) {
             std::string path = input.substr(3);
 
-            // ~ expansion
+            // Handle '~' expansion
             if (path == "~") {
                 const char* home = std::getenv("HOME");
                 if (home != nullptr) {
@@ -84,7 +107,7 @@ int main() {
                 continue;
             }
 
-            // absolute / relative handling
+            // Handle any other path (absolute or relative)
             if (!path.empty()) {
                 if (chdir(path.c_str()) != 0) {
                     std::cout << "cd: " << path << ": No such file or directory" << std::endl;
@@ -93,7 +116,7 @@ int main() {
             continue;
         }
 
-        // echo builtin (with quote parsing)
+        // echo builtin (with quote/escape parsing)
         if (input.rfind("echo ", 0) == 0) {
             std::vector<std::string> parts = tokenize(input.substr(5));
 
@@ -109,7 +132,10 @@ int main() {
         if (input.rfind("type ", 0) == 0) {
             std::string target = input.substr(5);
 
-            if (target == "echo" || target == "exit" || target == "type" || target == "pwd" || target == "cd") {
+            // Builtins
+            if (target == "echo" || target == "exit" ||
+                target == "type" || target == "pwd" ||
+                target == "cd") {
                 std::cout << target << " is a shell builtin" << std::endl;
                 continue;
             }
@@ -149,10 +175,11 @@ int main() {
             continue;
         }
 
-        // ---------- external command execution (with quoting) ----------
+        // ---------- external program execution (with quoting & escapes) ----------
         std::vector<std::string> parts = tokenize(input);
-
-        if (parts.empty()) continue;
+        if (parts.empty()) {
+            continue;
+        }
 
         std::vector<char*> args;
         for (auto& s : parts) {
@@ -178,13 +205,12 @@ int main() {
                     std::string fullPath = dir + "/" + cmd;
 
                     if (access(fullPath.c_str(), X_OK) == 0) {
-
                         pid_t pid = fork();
 
-                        if (pid == 0) {
+                        if (pid == 0) { // child
                             execv(fullPath.c_str(), args.data());
-                            exit(1);
-                        } else {
+                            exit(1); // execv failed
+                        } else {      // parent
                             waitpid(pid, nullptr, 0);
                         }
 
@@ -203,12 +229,15 @@ int main() {
         }
 
         for (char* ptr : args) {
-            if (ptr) free(ptr);
+            if (ptr) {
+                free(ptr);
+            }
         }
     }
 
     return 0;
 }
+
 
 
 
