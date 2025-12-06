@@ -14,12 +14,20 @@ int main() {
         }
 
         if (input == "exit") {
-            break;  // terminate shell
+            break;
         }
 
-        std::cout << input << ": command not found" << std::endl;
+        // Check if the command starts with "echo "
+        if (input.rfind("echo ", 0) == 0) {
+            // Extract everything after "echo "
+            std::string text = input.substr(5);
+            std::cout << text << std::endl;
+        } else {
+            std::cout << input << ": command not found" << std::endl;
+        }
     }
 
     return 0;
 }
+
 
