@@ -305,7 +305,10 @@ void run_history_builtin(const std::vector<std::string> &parts) {
 
         if (option == "-r") {
             // read_history_range appends history from the file to memory.
-            if (read_history_range(path.c_str(), -1, -1) != 0) {
+            if (read_history_range(path.c_str(), -1, -1) == 0) {
+                // FIX: Success: Update history_offset to reflect the new total length.
+                history_offset = history_length;
+            } else {
                 std::cerr << "history: cannot read " << path << std::endl;
             }
             return;
