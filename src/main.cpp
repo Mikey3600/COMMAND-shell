@@ -33,17 +33,18 @@ int main() {
             continue;
         }
 
-        // cd builtin (absolute paths only for now)
+        // cd builtin (absolute + relative paths)
         if (input.rfind("cd ", 0) == 0) {
             std::string path = input.substr(3);
 
-            // Check if it's an absolute path (starts with '/')
-            if (!path.empty() && path[0] == '/') {
+            // Ignore empty cd
+            if (!path.empty()) {
+
+                // Attempt change directory
                 if (chdir(path.c_str()) != 0) {
                     std::cout << "cd: " << path << ": No such file or directory" << std::endl;
                 }
             }
-            // If not absolute path, ignore / do nothing for this stage
             continue;
         }
 
