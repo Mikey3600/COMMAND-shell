@@ -45,11 +45,20 @@ std::vector<std::string> tokenize(const std::string& input) {
             continue;
         }
 
-        if (c=='\'' && !inDoubleQuote){ inSingleQuote=!inSingleQuote; continue; }
-        if (c=='"' && !inSingleQuote){ inDoubleQuote=!inDoubleQuote; continue; }
+        if (c=='\'' && !inDoubleQuote){
+            inSingleQuote=!inSingleQuote;
+            continue;
+        }
+        if (c=='"' && !inSingleQuote){
+            inDoubleQuote=!inDoubleQuote;
+            continue;
+        }
 
         if (isspace((unsigned char)c) && !inSingleQuote && !inDoubleQuote){
-            if(!current.empty()){ tokens.push_back(current); current.clear();}
+            if(!current.empty()){
+                tokens.push_back(current);
+                current.clear();
+            }
             continue;
         }
 
@@ -100,7 +109,7 @@ std::vector<std::string> find_path_matches(const std::string& prefix){
 static std::string last_prefix;
 static int tab_press_count = 0;
 
-// ===== Custom TAB handler ======
+// ===== TAB Handler ======
 
 int tab_completion_handler(int count, int key){
     std::string prefix = rl_line_buffer;
@@ -127,10 +136,13 @@ int tab_completion_handler(int count, int key){
 
     std::cout << std::endl;
     for(size_t i=0;i<matches.size();i++){
-        std::cout<<matches[i];
-        if(i+1<matches.size()) std::cout<<"  ";
+        std::cout << matches[i];
+        if(i+1<matches.size()) std::cout << "  ";
     }
-    std::cout<<std::endl;
+    std::cout << std::endl;
+
+    std::cout << "$ " << prefix;
+    std::fflush(stdout);
 
     rl_replace_line(prefix.c_str(), 1);
     rl_point = prefix.size();
@@ -304,18 +316,26 @@ int main(){
                         std::string full=dir+"/"+cmd;
                         if(access(full.c_str(),X_OK)==0){
                             pid_t pid=fork();
-                            if(pid==0){ execv(full.c_str(),args.data()); exit(1); }
-                            else waitpid(pid,nullptr,0);
+                            if(pid==0){
+                                execv(full.c_str(),args.data());
+                                exit(1);
+                            }else{
+                                waitpid(pid,nullptr,0);
+                            }
                             executed=true;
                             break;
                         }
                     }
+
                     if(end==std::string::npos) break;
                     start=end+1;
                 }
             }
 
-            if(!executed) std::cerr<<cmd<<": command not found"<<std::endl;
+            if(!executed){
+                std::cerr<<cmd<<": command not found"<<std::endl;
+            }
+
             for(char*p:args) if(p) free(p);
         }
 
