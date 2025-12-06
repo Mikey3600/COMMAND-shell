@@ -306,7 +306,7 @@ void run_history_builtin(const std::vector<std::string> &parts) {
         if (option == "-r") {
             // read_history_range appends history from the file to memory.
             if (read_history_range(path.c_str(), -1, -1) == 0) {
-                // FIX: Success: Update history_offset to reflect the new total length.
+                // Success: Update history_offset to reflect the new total length.
                 history_offset = history_length;
             } else {
                 std::cerr << "history: cannot read " << path << std::endl;
@@ -324,6 +324,8 @@ void run_history_builtin(const std::vector<std::string> &parts) {
 
         if (option == "-a") {
             // Append only the new entries since the last I/O operation (tracked by history_offset).
+            // history_length is the total number of commands in memory.
+            // history_offset is the number of commands already saved to the file.
             int entries_to_append = history_length - history_offset;
             
             if (entries_to_append > 0) {
@@ -615,16 +617,9 @@ int main() {
         std::string input(line);
         
         // Add to history BEFORE parsing/execution.
-        // Skip adding the command if it's empty or starts with "history" (after trimming whitespace).
+        // REVERT: Add all commands, including 'history -a', as expected by the line count.
         if (!input.empty()) {
-            std::string trimmed_input = input;
-            trimmed_input.erase(trimmed_input.begin(), std::find_if(trimmed_input.begin(), trimmed_input.end(), [](unsigned char ch){
-                return !std::isspace(ch);
-            }));
-
-            if (trimmed_input.rfind("history", 0) != 0) {
-                add_history(input.c_str());
-            }
+            add_history(input.c_str());
         }
         
         free(line);
