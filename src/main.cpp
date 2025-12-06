@@ -7,6 +7,36 @@
 #include <unistd.h>    // fork(), execv(), access(), X_OK, getcwd(), chdir()
 #include <sys/wait.h>  // waitpid()
 
+// Tokenizer with single quote support
+std::vector<std::string> tokenize(const std::string& input) {
+    std::vector<std::string> tokens;
+    std::string current;
+    bool inSingleQuote = false;
+
+    for (size_t i = 0; i < input.size(); i++) {
+        char c = input[i];
+
+        if (c == '\'') {
+            inSingleQuote = !inSingleQuote;
+        }
+        else if (std::isspace(c) && !inSingleQuote) {
+            if (!current.empty()) {
+                tokens.push_back(current);
+                current.clear();
+            }
+        }
+        else {
+            current.push_back(c);
+        }
+    }
+
+    if (!current.empty()) {
+        tokens.push_back(current);
+    }
+
+    return tokens;
+}
+
 int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
@@ -33,11 +63,10 @@ int main() {
             continue;
         }
 
-        // cd builtin (absolute, relative, ~)
+        // cd builtin (absolute + relative + ~)
         if (input.rfind("cd ", 0) == 0) {
             std::string path = input.substr(3);
 
-            // Handle '~' expansion
             if (path == "~") {
                 const char* home = std::getenv("HOME");
                 if (home != nullptr) {
@@ -50,7 +79,6 @@ int main() {
                 continue;
             }
 
-            // Handle any other path (absolute or relative)
             if (!path.empty()) {
                 if (chdir(path.c_str()) != 0) {
                     std::cout << "cd: " << path << ": No such file or directory" << std::endl;
@@ -61,8 +89,12 @@ int main() {
 
         // echo builtin
         if (input.rfind("echo ", 0) == 0) {
-            std::string text = input.substr(5);
-            std::cout << text << std::endl;
+            std::vector<std::string> parts = tokenize(input.substr(5));
+            for (size_t i = 0; i < parts.size(); i++) {
+                std::cout << parts[i];
+                if (i + 1 < parts.size()) std::cout << " ";
+            }
+            std::cout << std::endl;
             continue;
         }
 
@@ -70,7 +102,6 @@ int main() {
         if (input.rfind("type ", 0) == 0) {
             std::string target = input.substr(5);
 
-            // Builtins
             if (target == "echo" || target == "exit" || target == "type" || target == "pwd" || target == "cd") {
                 std::cout << target << " is a shell builtin" << std::endl;
                 continue;
@@ -111,13 +142,14 @@ int main() {
             continue;
         }
 
-        // ---------- external program execution ----------
-        std::istringstream iss(input);
-        std::vector<char*> args;
-        std::string token;
+        // ---------- external command execution with quoted args ----------
+        std::vector<std::string> parts = tokenize(input);
 
-        while (iss >> token) {
-            args.push_back(strdup(token.c_str()));
+        if (parts.empty()) continue;
+
+        std::vector<char*> args;
+        for (auto& s : parts) {
+            args.push_back(strdup(s.c_str()));
         }
         args.push_back(nullptr);
 
@@ -142,10 +174,10 @@ int main() {
 
                         pid_t pid = fork();
 
-                        if (pid == 0) { // child
+                        if (pid == 0) {
                             execv(fullPath.c_str(), args.data());
                             exit(1);
-                        } else { // parent
+                        } else {
                             waitpid(pid, nullptr, 0);
                         }
 
