@@ -9,8 +9,8 @@
 #include <sys/wait.h>  // waitpid()
 
 // Tokenizer supporting:
-// - single quotes: '...'
-// - double quotes: "..."
+// - single quotes: characters (including backslashes) are literal
+// - double quotes: characters are literal (no escape expansion yet)
 // - backslash escaping outside quotes: \x
 std::vector<std::string> tokenize(const std::string& input) {
     std::vector<std::string> tokens;
@@ -23,12 +23,12 @@ std::vector<std::string> tokenize(const std::string& input) {
         char c = input[i];
 
         if (escape) {
-            // Take this character literally
+            // Take next character literally
             current.push_back(c);
             escape = false;
         }
         else if (c == '\\' && !inSingleQuote && !inDoubleQuote) {
-            // Start escape for next character
+            // Escape applies ONLY outside quotes
             escape = true;
         }
         else if (c == '\'' && !inDoubleQuote) {
@@ -40,20 +40,20 @@ std::vector<std::string> tokenize(const std::string& input) {
             inDoubleQuote = !inDoubleQuote;
         }
         else if (std::isspace(static_cast<unsigned char>(c)) && !inSingleQuote && !inDoubleQuote) {
-            // Delimiter outside quotes
+            // Token split
             if (!current.empty()) {
                 tokens.push_back(current);
                 current.clear();
             }
         }
         else {
-            // Normal character
+            // Literal behaviour
             current.push_back(c);
         }
     }
 
     if (escape) {
-        // Trailing backslash with nothing after it: treat '\' literally
+        // Trailing backslash literal
         current.push_back('\\');
     }
 
@@ -90,11 +90,10 @@ int main() {
             continue;
         }
 
-        // cd builtin (absolute, relative, ~)
+        // cd builtin
         if (input.rfind("cd ", 0) == 0) {
             std::string path = input.substr(3);
 
-            // Handle '~' expansion
             if (path == "~") {
                 const char* home = std::getenv("HOME");
                 if (home != nullptr) {
@@ -107,7 +106,6 @@ int main() {
                 continue;
             }
 
-            // Handle any other path (absolute or relative)
             if (!path.empty()) {
                 if (chdir(path.c_str()) != 0) {
                     std::cout << "cd: " << path << ": No such file or directory" << std::endl;
@@ -116,7 +114,7 @@ int main() {
             continue;
         }
 
-        // echo builtin (with quote/escape parsing)
+        // echo builtin
         if (input.rfind("echo ", 0) == 0) {
             std::vector<std::string> parts = tokenize(input.substr(5));
 
@@ -132,7 +130,6 @@ int main() {
         if (input.rfind("type ", 0) == 0) {
             std::string target = input.substr(5);
 
-            // Builtins
             if (target == "echo" || target == "exit" ||
                 target == "type" || target == "pwd" ||
                 target == "cd") {
@@ -175,11 +172,9 @@ int main() {
             continue;
         }
 
-        // ---------- external program execution (with quoting & escapes) ----------
+        // external execution
         std::vector<std::string> parts = tokenize(input);
-        if (parts.empty()) {
-            continue;
-        }
+        if (parts.empty()) continue;
 
         std::vector<char*> args;
         for (auto& s : parts) {
@@ -205,12 +200,13 @@ int main() {
                     std::string fullPath = dir + "/" + cmd;
 
                     if (access(fullPath.c_str(), X_OK) == 0) {
+
                         pid_t pid = fork();
 
-                        if (pid == 0) { // child
+                        if (pid == 0) {
                             execv(fullPath.c_str(), args.data());
-                            exit(1); // execv failed
-                        } else {      // parent
+                            exit(1);
+                        } else {
                             waitpid(pid, nullptr, 0);
                         }
 
@@ -229,14 +225,13 @@ int main() {
         }
 
         for (char* ptr : args) {
-            if (ptr) {
-                free(ptr);
-            }
+            if (ptr) free(ptr);
         }
     }
 
     return 0;
 }
+
 
 
 
