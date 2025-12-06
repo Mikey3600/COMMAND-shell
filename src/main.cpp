@@ -93,11 +93,8 @@ char* builtin_generator(const char* text, int state) {
         index++;
 
         if (std::strncmp(cmd, text, len) == 0) {
-            // allocate cmd + space + null
-            char* result = (char*)malloc(strlen(cmd) + 2);
-            strcpy(result, cmd);
-            strcat(result, " "); // exactly ONE space
-            return result;
+            // return ONLY the word — readline will append the space
+            return strdup(cmd);
         }
     }
     return nullptr;
@@ -293,7 +290,7 @@ int main() {
                                 }
                             }
                             if (end == std::string::npos) break;
-                           	start = end + 1;
+                            start = end + 1;
                         }
                     }
 
@@ -353,7 +350,7 @@ int main() {
             }
 
             if (!executed) {
-               	std::cerr << cmd << ": command not found" << std::endl;
+                std::cerr << cmd << ": command not found" << std::endl;
             }
 
             for (char* ptr: args) if (ptr) free(ptr);
