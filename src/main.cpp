@@ -287,7 +287,70 @@ int tab_handler(int count, int key) {
     return 0;
 }
 
-// ======================= Run external command (single) =======================
+// ======================= Builtin detection =======================
+
+bool is_builtin(const std::string &cmd) {
+    for (const auto &b : builtin_list) {
+        if (b == cmd) return true;
+    }
+    return false;
+}
+
+// ======================= Builtins for child (in pipelines) =======================
+
+void run_builtin_child(const std::vector<std::string> &parts) {
+    const std::string &cmd = parts[0];
+
+    if (cmd == "echo") {
+        for (size_t i = 1; i < parts.size(); i++) {
+            std::cout << parts[i];
+            if (i + 1 < parts.size()) std::cout << " ";
+        }
+        std::cout << std::endl;
+        _exit(0);
+    }
+
+    if (cmd == "pwd") {
+        char buf[4096];
+        if (getcwd(buf, sizeof(buf))) {
+            std::cout << buf << std::endl;
+        }
+        _exit(0);
+    }
+
+    if (cmd == "cd") {
+        // In pipeline, cd shouldn't affect parent shell.
+        _exit(0);
+    }
+
+    if (cmd == "exit") {
+        // In pipeline, exit shouldn't kill parent shell.
+        _exit(0);
+    }
+
+    if (cmd == "type") {
+        if (parts.size() > 1) {
+            std::string target = parts[1];
+
+            bool builtin = is_builtin(target);
+            if (builtin) {
+                std::cout << target << " is a shell builtin" << std::endl;
+            } else {
+                std::string full;
+                if (find_executable_in_path(target, full)) {
+                    std::cout << target << " is " << full << std::endl;
+                } else {
+                    std::cerr << target << ": not found" << std::endl;
+                }
+            }
+        }
+        _exit(0);
+    }
+
+    _exit(0);
+}
+
+// ======================= Run external command (single, no pipe) =======================
 
 void run_single_external(const std::vector<std::string> &parts) {
     std::vector<char*> argv;
@@ -339,24 +402,11 @@ void run_single_external(const std::vector<std::string> &parts) {
     }
 }
 
-// ======================= Run pipeline: cmd1 | cmd2 =======================
+// ======================= Run pipeline: left | right (builtins + externals) =======================
 
 void run_pipeline(const std::vector<std::string> &leftParts,
                   const std::vector<std::string> &rightParts) {
     if (leftParts.empty() || rightParts.empty()) {
-        return;
-    }
-
-    std::string leftCmd = leftParts[0];
-    std::string rightCmd = rightParts[0];
-
-    std::string leftPath, rightPath;
-    if (!find_executable_in_path(leftCmd, leftPath)) {
-        std::cerr << leftCmd << ": command not found" << std::endl;
-        return;
-    }
-    if (!find_executable_in_path(rightCmd, rightPath)) {
-        std::cerr << rightCmd << ": command not found" << std::endl;
         return;
     }
 
@@ -366,34 +416,54 @@ void run_pipeline(const std::vector<std::string> &leftParts,
         return;
     }
 
-    // Build argv for left
+    // Build argv for left (if external)
     std::vector<char*> argvLeft;
     for (auto &s : leftParts) argvLeft.push_back(strdup(s.c_str()));
     argvLeft.push_back(nullptr);
 
-    // Build argv for right
+    // Build argv for right (if external)
     std::vector<char*> argvRight;
     for (auto &s : rightParts) argvRight.push_back(strdup(s.c_str()));
     argvRight.push_back(nullptr);
 
+    // LEFT child
     pid_t pid1 = fork();
     if (pid1 == 0) {
-        // Left child: stdout → pipe write end
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[0]);
         close(pipefd[1]);
-        execv(leftPath.c_str(), argvLeft.data());
-        std::exit(1);
+
+        if (is_builtin(leftParts[0])) {
+            run_builtin_child(leftParts);
+        } else {
+            std::string fullPath;
+            if (!find_executable_in_path(leftParts[0], fullPath)) {
+                std::cerr << leftParts[0] << ": command not found" << std::endl;
+                _exit(1);
+            }
+            execv(fullPath.c_str(), argvLeft.data());
+            _exit(1);
+        }
     }
 
+    // RIGHT child
     pid_t pid2 = fork();
     if (pid2 == 0) {
-        // Right child: stdin ← pipe read end
         dup2(pipefd[0], STDIN_FILENO);
         close(pipefd[0]);
         close(pipefd[1]);
-        execv(rightPath.c_str(), argvRight.data());
-        std::exit(1);
+
+        if (is_builtin(rightParts[0])) {
+            run_builtin_child(rightParts);
+        } else {
+            std::string fullPath;
+            if (!find_executable_in_path(rightParts[0], fullPath)) {
+                std::cerr << rightParts[0] << ": command not found" << std::endl;
+                _exit(1);
+            }
+            execv(fullPath.c_str(), argvRight.data());
+            _exit(1);
+        }
     }
 
     // Parent
@@ -498,7 +568,36 @@ int main() {
             }
         }
 
-        // ======================= BUILTINS =======================
+        // ======================= PIPELINE DETECTION (before builtins) =======================
+
+        size_t pipePos = parts.size();
+        for (size_t i = 0; i < parts.size(); ++i) {
+            if (parts[i] == "|") {
+                pipePos = i;
+                break;
+            }
+        }
+
+        if (pipePos != parts.size()) {
+            std::vector<std::string> leftParts(parts.begin(), parts.begin() + pipePos);
+            std::vector<std::string> rightParts(parts.begin() + pipePos + 1, parts.end());
+
+            if (!leftParts.empty() && !rightParts.empty()) {
+                run_pipeline(leftParts, rightParts);
+            }
+
+            if (savedStdout != -1) {
+                dup2(savedStdout, STDOUT_FILENO);
+                close(savedStdout);
+            }
+            if (savedStderr != -1) {
+                dup2(savedStderr, STDERR_FILENO);
+                close(savedStderr);
+            }
+            continue;
+        }
+
+        // ======================= BUILTINS (no pipeline) =======================
 
         if (parts.size() == 1 && parts[0] == "exit") {
             if (savedStdout != -1) {
@@ -578,15 +677,7 @@ int main() {
             if (parts.size() > 1) {
                 std::string target = parts[1];
 
-                bool isBuiltin = false;
-                for (auto &b : builtin_list) {
-                    if (b == target) {
-                        isBuiltin = true;
-                        break;
-                    }
-                }
-
-                if (isBuiltin) {
+                if (is_builtin(target)) {
                     std::cout << target << " is a shell builtin" << std::endl;
                 } else {
                     std::string full;
@@ -608,36 +699,7 @@ int main() {
             continue;
         }
 
-        // ======================= PIPELINE DETECTION =======================
-
-        size_t pipePos = parts.size();
-        for (size_t i = 0; i < parts.size(); ++i) {
-            if (parts[i] == "|") {
-                pipePos = i;
-                break;
-            }
-        }
-
-        if (pipePos != parts.size()) {
-            std::vector<std::string> leftParts(parts.begin(), parts.begin() + pipePos);
-            std::vector<std::string> rightParts(parts.begin() + pipePos + 1, parts.end());
-
-            if (!leftParts.empty() && !rightParts.empty()) {
-                run_pipeline(leftParts, rightParts);
-            }
-
-            if (savedStdout != -1) {
-                dup2(savedStdout, STDOUT_FILENO);
-                close(savedStdout);
-            }
-            if (savedStderr != -1) {
-                dup2(savedStderr, STDERR_FILENO);
-                close(savedStderr);
-            }
-            continue;
-        }
-
-        // ======================= EXTERNAL EXECUTION (no pipe) =======================
+        // ======================= EXTERNAL EXECUTION (no pipe, no builtin) =======================
 
         run_single_external(parts);
 
