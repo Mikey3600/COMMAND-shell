@@ -4,7 +4,7 @@
 #include <sstream>
 #include <vector>
 #include <cstring>     // strdup()
-#include <unistd.h>    // fork(), execv(), access(), X_OK, getcwd()
+#include <unistd.h>    // fork(), execv(), access(), X_OK, getcwd(), chdir()
 #include <sys/wait.h>  // waitpid()
 
 int main() {
@@ -33,6 +33,20 @@ int main() {
             continue;
         }
 
+        // cd builtin (absolute paths only for now)
+        if (input.rfind("cd ", 0) == 0) {
+            std::string path = input.substr(3);
+
+            // Check if it's an absolute path (starts with '/')
+            if (!path.empty() && path[0] == '/') {
+                if (chdir(path.c_str()) != 0) {
+                    std::cout << "cd: " << path << ": No such file or directory" << std::endl;
+                }
+            }
+            // If not absolute path, ignore / do nothing for this stage
+            continue;
+        }
+
         // echo builtin
         if (input.rfind("echo ", 0) == 0) {
             std::string text = input.substr(5);
@@ -45,7 +59,7 @@ int main() {
             std::string target = input.substr(5);
 
             // Builtins
-            if (target == "echo" || target == "exit" || target == "type" || target == "pwd") {
+            if (target == "echo" || target == "exit" || target == "type" || target == "pwd" || target == "cd") {
                 std::cout << target << " is a shell builtin" << std::endl;
                 continue;
             }
