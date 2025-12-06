@@ -32,8 +32,8 @@ std::vector<std::string> tokenize(const std::string& input) {
         }
 
         if (inDoubleQuote && c == '\\') {
-            if (i + 1 < input.size() && (input[i+1] == '"' || input[i+1] == '\\')) {
-                current.push_back(input[i+1]);
+            if (i + 1 < input.size() && (input[i + 1] == '"' || input[i + 1] == '\\')) {
+                current.push_back(input[i + 1]);
                 i++;
                 continue;
             }
@@ -74,10 +74,9 @@ std::vector<std::string> tokenize(const std::string& input) {
 
 // ======================= TAB completion =======================
 
-// builtin list
 std::vector<std::string> builtin_list = {"echo", "exit", "pwd", "cd", "type"};
 
-// search PATH for executables beginning with prefix
+// scan PATH for executables
 std::vector<std::string> find_path_matches(const char* text) {
     std::vector<std::string> matches;
     char* pathEnv = getenv("PATH");
@@ -98,7 +97,6 @@ std::vector<std::string> find_path_matches(const char* text) {
                 struct dirent* entry;
                 while ((entry = readdir(dp))) {
                     if (strncmp(entry->d_name, text, strlen(text)) == 0) {
-                        // must be executable
                         std::string full = dir + "/" + entry->d_name;
                         if (access(full.c_str(), X_OK) == 0) {
                             matches.push_back(entry->d_name);
@@ -114,7 +112,7 @@ std::vector<std::string> find_path_matches(const char* text) {
     return matches;
 }
 
-// generator called by readline
+// generator for readline
 char* completion_generator(const char* text, int state) {
     static std::vector<std::string> candidates;
     static int index;
@@ -123,19 +121,16 @@ char* completion_generator(const char* text, int state) {
         candidates.clear();
         index = 0;
 
-        // add builtin matches
-        for (auto& b : builtin_list) {
+        for (auto& b : builtin_list)
             if (b.rfind(text, 0) == 0) candidates.push_back(b);
-        }
 
-        // add PATH executable matches
         auto ext = find_path_matches(text);
         candidates.insert(candidates.end(), ext.begin(), ext.end());
     }
 
-    if (index < candidates.size()) {
+    if (index < candidates.size())
         return strdup(candidates[index++].c_str());
-    }
+
     return nullptr;
 }
 
@@ -168,7 +163,6 @@ int main() {
         std::string redirectOutFile, redirectErrFile;
         bool appendOut = false, appendErr = false;
 
-        // stdout redirection
         for (size_t i = 0; i < parts.size(); i++) {
             if (parts[i] == ">" || parts[i] == "1>") {
                 redirectOutFile = parts[i + 1];
@@ -184,7 +178,6 @@ int main() {
             }
         }
 
-        // stderr redirection
         for (size_t i = 0; i < parts.size(); i++) {
             if (parts[i] == "2>") {
                 redirectErrFile = parts[i + 1];
@@ -216,22 +209,32 @@ int main() {
             if (fd >= 0) { dup2(fd, STDERR_FILENO); close(fd); }
         }
 
-        // builtins
+        // =================== BUILTINS ====================
+
         if (parts.size()==1 && parts[0]=="exit") goto exit_now;
 
         if (parts.size()==1 && parts[0]=="pwd") {
             char buf[4096];
-            if (getcwd(buf, sizeof(buf))) std::cout<<buf<<std::endl;
+            if (getcwd(buf,sizeof(buf))) std::cout<<buf<<std::endl;
             goto restore;
         }
 
         if (parts[0]=="cd") {
-            if (parts.size()>1) {
+            if (parts.size() > 1) {
                 std::string path = parts[1];
-                if (path=="~") {
-                    const char* home=getenv("HOME");
-                    if (home) chdir(home);
-                } else chdir(path.c_str());
+                if (path == "~") {
+                    const char* home = getenv("HOME");
+                    if (home != nullptr) {
+                        if (chdir(home) != 0)
+                            std::cerr << "cd: " << home << ": No such file or directory" << std::endl;
+                    } else {
+                        std::cerr << "cd: HOME not set" << std::endl;
+                    }
+                } else {
+                    if (chdir(path.c_str()) != 0) {
+                        std::cerr << "cd: " << path << ": No such file or directory" << std::endl;
+                    }
+                }
             }
             goto restore;
         }
@@ -245,14 +248,47 @@ int main() {
             goto restore;
         }
 
-        // type builtin logic kept same (omitted here for brevity — your previous implementation persists)
+        if (parts[0]=="type") {
+            if (parts.size() > 1) {
+                std::string target = parts[1];
+                if (target=="echo"||target=="exit"||target=="cd"||target=="pwd"||target=="type")
+                    std::cout<<target<<" is a shell builtin"<<std::endl;
+                else {
+                    char* pathEnv = getenv("PATH");
+                    bool found=false;
+                    if (pathEnv) {
+                        std::string path(pathEnv);
+                        size_t start=0;
+                        while (true) {
+                            size_t end=path.find(':',start);
+                            std::string dir=(end==std::string::npos)?path.substr(start)
+                                                                    :path.substr(start,end-start);
+                            if (!dir.empty()) {
+                                std::string full=dir+"/"+target;
+                                if (access(full.c_str(),X_OK)==0) {
+                                    std::cout<<target<<" is "<<full<<std::endl;
+                                    found=true;
+                                    break;
+                                }
+                            }
+                            if(end==std::string::npos)break;
+                            start=end+1;
+                        }
+                    }
+                    if (!found) std::cerr<<target<<": not found"<<std::endl;
+                }
+            }
+            goto restore;
+        }
 
-        // execution
+        // =================== EXTERNAL EXECUTION ====================
+
         {
             std::vector<char*> args;
-            for (auto &s: parts) args.push_back(strdup(s.c_str()));
+            for (auto&s: parts) args.push_back(strdup(s.c_str()));
             args.push_back(nullptr);
 
+            char* cmd = args[0];
             bool executed=false;
             char* pathEnv = getenv("PATH");
 
@@ -264,26 +300,25 @@ int main() {
                     std::string dir=(end==std::string::npos)?path.substr(start)
                                                             :path.substr(start,end-start);
                     if (!dir.empty()) {
-                        std::string full=dir+"/"+args[0];
+                        std::string full=dir+"/"+cmd;
                         if (access(full.c_str(),X_OK)==0) {
                             pid_t pid=fork();
-                            if (pid==0) {
-                                execv(full.c_str(),args.data());
-                                exit(1);
-                            } else waitpid(pid,nullptr,0);
+                            if(pid==0){ execv(full.c_str(),args.data()); exit(1); }
+                            else waitpid(pid,nullptr,0);
 
                             executed=true;
                             break;
                         }
                     }
-                    if (end==std::string::npos) break;
+                    if (end==std::string::npos)break;
                     start=end+1;
                 }
             }
 
-            if (!executed) std::cerr<<args[0]<<": command not found"<<std::endl;
+            if (!executed)
+                std::cerr<<cmd<<": command not found"<<std::endl;
 
-            for (char* p: args) if (p) free(p);
+            for (char*p:args) if(p)free(p);
         }
 
 restore:
@@ -292,13 +327,14 @@ restore:
         continue;
 
 exit_now:
-        if (savedStdout!=-1) { dup2(savedStdout,STDOUT_FILENO); close(savedStdout);}
-        if (savedStderr!=-1) { dup2(savedStderr,STDERR_FILENO); close(savedStderr);}
+        if (savedStdout!=-1){ dup2(savedStdout,STDOUT_FILENO); close(savedStdout);}
+        if (savedStderr!=-1){ dup2(savedStderr,STDERR_FILENO); close(savedStderr);}
         break;
     }
 
     return 0;
 }
+
 
 
 
