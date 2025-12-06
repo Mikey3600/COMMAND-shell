@@ -13,7 +13,7 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
-// ======================= Tokenizer (handles quotes + backslashes) =======================
+// ======================= Tokenizer (quotes + backslashes) =======================
 
 std::vector<std::string> tokenize(const std::string &input) {
     std::vector<std::string> tokens;
@@ -119,17 +119,34 @@ std::vector<std::string> find_path_matches(const std::string &prefix) {
     return matches;
 }
 
+// ======================= Longest Common Prefix (LCP) =======================
+
+std::string longest_common_prefix(const std::vector<std::string> &v) {
+    if (v.empty()) return "";
+    std::string prefix = v[0];
+    for (size_t i = 1; i < v.size(); i++) {
+        const std::string &s = v[i];
+        size_t j = 0;
+        while (j < prefix.size() && j < s.size() && prefix[j] == s[j]) {
+            ++j;
+        }
+        prefix.resize(j);
+        if (prefix.empty()) break;
+    }
+    return prefix;
+}
+
 // ======================= TAB completion state =======================
 
 static std::string last_prefix;
 static int tab_count = 0;
 
-// ======================= TAB handler =======================
+// ======================= TAB handler with LCP =======================
 
 int tab_handler(int count, int key) {
     std::string prefix = rl_line_buffer;
 
-    // 1) Builtin completions first
+    // 1) Builtin completions
     std::vector<std::string> builtin_matches;
     for (auto &b : builtin_list) {
         if (b.rfind(prefix, 0) == 0) {
@@ -137,10 +154,11 @@ int tab_handler(int count, int key) {
         }
     }
 
-    // Single builtin match -> complete immediately
+    // Single builtin match → complete immediately
     if (builtin_matches.size() == 1) {
-        rl_replace_line(builtin_matches[0].c_str(), 1);
-        rl_point = builtin_matches[0].size();
+        const std::string &full = builtin_matches[0];
+        rl_replace_line(full.c_str(), 1);
+        rl_point = full.size();
         rl_insert_text((char*)" ");
         rl_redisplay();
         last_prefix.clear();
@@ -148,12 +166,23 @@ int tab_handler(int count, int key) {
         return 0;
     }
 
-    // 2) PATH matches
+    // 2) PATH executable matches
     std::vector<std::string> path_matches = find_path_matches(prefix);
     std::sort(path_matches.begin(), path_matches.end());
 
-    // If multiple builtins, use multi-match behavior on builtins
+    // Multiple builtin matches (rare) → treat like multi-path matches
     if (builtin_matches.size() > 1) {
+        // LCP on builtins if possible
+        std::string lcp = longest_common_prefix(builtin_matches);
+        if (!lcp.empty() && lcp.size() > prefix.size()) {
+            rl_replace_line(lcp.c_str(), 1);
+            rl_point = lcp.size();
+            rl_redisplay();
+            last_prefix = lcp;
+            tab_count = 0;
+            return 0;
+        }
+
         if (prefix != last_prefix) tab_count = 0;
         last_prefix = prefix;
         tab_count++;
@@ -177,43 +206,57 @@ int tab_handler(int count, int key) {
         return 0;
     }
 
-    // Now handle PATH completions
-    if (!path_matches.empty()) {
-        if (path_matches.size() == 1) {
-            rl_replace_line(path_matches[0].c_str(), 1);
-            rl_point = path_matches[0].size();
-            rl_insert_text((char*)" ");
-            rl_redisplay();
-            last_prefix.clear();
-            tab_count = 0;
-            return 0;
-        }
-
-        if (prefix != last_prefix) tab_count = 0;
-        last_prefix = prefix;
-        tab_count++;
-
-        if (tab_count == 1) {
-            write(STDOUT_FILENO, "\a", 1);
-            return 0;
-        }
-
-        std::cout << "\n";
-        for (size_t i = 0; i < path_matches.size(); i++) {
-            std::cout << path_matches[i];
-            if (i + 1 < path_matches.size()) std::cout << "  ";
-        }
-        std::cout << "\n$ " << prefix;
-        std::fflush(stdout);
-
-        rl_replace_line(prefix.c_str(), 1);
-        rl_point = prefix.size();
-        rl_redisplay();
+    // No path matches either → bell
+    if (path_matches.empty()) {
+        write(STDOUT_FILENO, "\a", 1);
         return 0;
     }
 
-    // No matches at all -> bell
-    write(STDOUT_FILENO, "\a", 1);
+    // Exactly one PATH match → full completion + space
+    if (path_matches.size() == 1) {
+        const std::string &full = path_matches[0];
+        rl_replace_line(full.c_str(), 1);
+        rl_point = full.size();
+        rl_insert_text((char*)" ");
+        rl_redisplay();
+        last_prefix.clear();
+        tab_count = 0;
+        return 0;
+    }
+
+    // Multiple PATH matches → use LCP
+    std::string lcp = longest_common_prefix(path_matches);
+    if (!lcp.empty() && lcp.size() > prefix.size()) {
+        // Extend to LCP (xyz_ -> xyz_foo, etc.)
+        rl_replace_line(lcp.c_str(), 1);
+        rl_point = lcp.size();
+        rl_redisplay();
+        last_prefix = lcp;
+        tab_count = 0;
+        return 0;
+    }
+
+    // LCP == prefix → fall back to bell + second TAB list behavior
+    if (prefix != last_prefix) tab_count = 0;
+    last_prefix = prefix;
+    tab_count++;
+
+    if (tab_count == 1) {
+        write(STDOUT_FILENO, "\a", 1);
+        return 0;
+    }
+
+    std::cout << "\n";
+    for (size_t i = 0; i < path_matches.size(); i++) {
+        std::cout << path_matches[i];
+        if (i + 1 < path_matches.size()) std::cout << "  ";
+    }
+    std::cout << "\n$ " << prefix;
+    std::fflush(stdout);
+
+    rl_replace_line(prefix.c_str(), 1);
+    rl_point = prefix.size();
+    rl_redisplay();
     return 0;
 }
 
@@ -307,7 +350,6 @@ int main() {
         int savedStdout = -1;
         int savedStderr = -1;
 
-        // Apply stdout redirection
         if (!redirectOutFile.empty()) {
             savedStdout = dup(STDOUT_FILENO);
             int flags = O_CREAT | O_WRONLY;
@@ -323,7 +365,6 @@ int main() {
             }
         }
 
-        // Apply stderr redirection
         if (!redirectErrFile.empty()) {
             savedStderr = dup(STDERR_FILENO);
             int flags = O_CREAT | O_WRONLY;
@@ -341,7 +382,6 @@ int main() {
 
         // ======================= BUILTINS =======================
 
-        // exit
         if (parts.size() == 1 && parts[0] == "exit") {
             if (savedStdout != -1) {
                 dup2(savedStdout, STDOUT_FILENO);
@@ -354,7 +394,6 @@ int main() {
             break;
         }
 
-        // pwd
         if (parts.size() == 1 && parts[0] == "pwd") {
             char buf[4096];
             if (getcwd(buf, sizeof(buf))) {
@@ -371,7 +410,6 @@ int main() {
             continue;
         }
 
-        // cd
         if (parts[0] == "cd") {
             if (parts.size() > 1) {
                 std::string path = parts[1];
@@ -401,7 +439,6 @@ int main() {
             continue;
         }
 
-        // echo
         if (parts[0] == "echo") {
             for (size_t i = 1; i < parts.size(); i++) {
                 std::cout << parts[i];
@@ -419,7 +456,6 @@ int main() {
             continue;
         }
 
-        // type
         if (parts[0] == "type") {
             if (parts.size() > 1) {
                 std::string target = parts[1];
@@ -506,8 +542,6 @@ int main() {
             }
         }
 
-        // ======================= RESTORE FDs =======================
-
         if (savedStdout != -1) {
             dup2(savedStdout, STDOUT_FILENO);
             close(savedStdout);
@@ -520,6 +554,7 @@ int main() {
 
     return 0;
 }
+
 
 
 
