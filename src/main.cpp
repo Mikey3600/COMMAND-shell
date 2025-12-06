@@ -16,6 +16,7 @@ using namespace std;
 
 vector<string> shell_history;
 size_t last_history_flush_index = 0;
+string histfile_path;
 
 string tokenize_input(const string& input, vector<string>& tokens) {
     tokens.clear();
@@ -145,6 +146,20 @@ void load_history_from_file(const string& filename) {
     last_history_flush_index = shell_history.size();
 }
 
+void save_history_to_file(const string& filename) {
+    int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        return;
+    }
+    
+    for (size_t i = 0; i < shell_history.size(); i++) {
+        string line = shell_history[i] + "\n";
+        write(fd, line.c_str(), line.size());
+    }
+    write(fd, "\n", 1);
+    close(fd);
+}
+
 int execute_builtin(const vector<string>& args) {
     if (args.empty()) return 0;
     
@@ -160,6 +175,9 @@ int execute_builtin(const vector<string>& args) {
     }
     
     if (cmd == "exit") {
+        if (!histfile_path.empty()) {
+            save_history_to_file(histfile_path);
+        }
         exit(args.size() > 1 ? atoi(args[1].c_str()) : 0);
     }
     
@@ -580,7 +598,8 @@ int main() {
     
     const char* histfile = getenv("HISTFILE");
     if (histfile) {
-        load_history_from_file(histfile);
+        histfile_path = histfile;
+        load_history_from_file(histfile_path);
     }
     
     while (true) {
@@ -588,6 +607,9 @@ int main() {
         
         if (!input) {
             cout << endl;
+            if (!histfile_path.empty()) {
+                save_history_to_file(histfile_path);
+            }
             break;
         }
         
