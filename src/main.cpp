@@ -17,6 +17,7 @@ using namespace std;
 vector<string> shell_history;
 size_t last_history_flush_index = 0;
 string histfile_path;
+size_t initial_history_size = 0;
 
 string tokenize_input(const string& input, vector<string>& tokens) {
     tokens.clear();
@@ -143,16 +144,21 @@ void load_history_from_file(const string& filename) {
             shell_history.push_back(line);
         }
     }
+    initial_history_size = shell_history.size();
     last_history_flush_index = shell_history.size();
 }
 
 void save_history_to_file(const string& filename) {
-    int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (initial_history_size >= shell_history.size()) {
+        return;
+    }
+    
+    int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd < 0) {
         return;
     }
     
-    for (size_t i = 0; i < shell_history.size(); i++) {
+    for (size_t i = initial_history_size; i < shell_history.size(); i++) {
         string line = shell_history[i] + "\n";
         write(fd, line.c_str(), line.size());
     }
