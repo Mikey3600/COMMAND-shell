@@ -295,46 +295,57 @@ int tab_handler(int count, int key) {
 }
 
 /**
- * @brief Handles the logic for the history builtin, including listing, reading (-r), and writing (-w).
+ * @brief Handles the logic for the history builtin, including listing, reading (-r), writing (-w), and appending (-a).
  */
 void run_history_builtin(const std::vector<std::string> &parts) {
-    // 1. Handle history -r <path> (Read)
-    if (parts.size() == 3 && parts[1] == "-r") {
+    // Check for arguments and perform history file operations first
+    if (parts.size() == 3) {
+        const std::string& option = parts[1];
         const std::string& path = parts[2];
-        
-        // read_history_range appends history from the file.
-        if (read_history_range(path.c_str(), -1, -1) != 0) {
-            std::cerr << "history: cannot read " << path << std::endl;
+
+        if (option == "-r") {
+            // read_history_range appends history from the file.
+            if (read_history_range(path.c_str(), -1, -1) != 0) {
+                std::cerr << "history: cannot read " << path << std::endl;
+            }
+            return;
         }
-        return;
+        
+        if (option == "-w") {
+            // write_history writes all in-memory history to the file, creating it if necessary.
+            if (write_history(path.c_str()) != 0) {
+                std::cerr << "history: cannot write " << path << std::endl;
+            }
+            return;
+        }
+
+        if (option == "-a") {
+            // append_history appends new history entries (since last I/O operation) to the file.
+            // Using -1 for the count appends everything new.
+            if (append_history(history_length, path.c_str()) != 0) {
+                 // history_length is the total number of entries, passing this tells readline to append
+                 // only entries since the last operation.
+                std::cerr << "history: cannot append to " << path << std::endl;
+            }
+            return;
+        }
     }
     
-    // 2. Handle history -w <path> (Write)
-    if (parts.size() == 3 && parts[1] == "-w") {
-        const std::string& path = parts[2];
+    // Fall through to listing history (history or history <n>)
 
-        // write_history writes all in-memory history to the file, creating it if necessary.
-        if (write_history(path.c_str()) != 0) {
-            std::cerr << "history: cannot write " << path << std::endl;
-        }
-        return;
-    }
-
-    // 3. Handle history or history <n> (List)
     int limit = 0;
-    if (parts.size() == 2 && parts[1] != "-r" && parts[1] != "-w") {
+    if (parts.size() == 2) {
         try {
             limit = std::stoi(parts[1]);
         } catch (const std::exception& e) {
-            std::cerr << "history: numeric argument required" << std::endl;
+            // Invalid number format or incorrect option structure
+            std::cerr << "history: invalid option or numeric argument required" << std::endl;
             return;
         }
-    } else if (parts.size() > 1) {
-        // Handle cases where the argument is not -r, -w, or a number
-        if (parts[1] != "-r" && parts[1] != "-w") {
-             std::cerr << "history: invalid option or missing argument" << std::endl;
-             return;
-        }
+    } else if (parts.size() > 3 || (parts.size() == 2 && (parts[1] == "-r" || parts[1] == "-w" || parts[1] == "-a"))) {
+        // Catch invalid argument counts for list command
+         std::cerr << "history: invalid usage" << std::endl;
+         return;
     }
 
 
@@ -416,9 +427,11 @@ void run_builtin_child(const std::vector<std::string> &parts) {
     
     // History handling for pipeline/child processes
     if (cmd == "history") {
-        // History commands are not usually run in a pipeline (as they manipulate the parent shell's history)
-        // However, if they are, we run the listing functionality. Read/Write is usually irrelevant in a child process.
-        run_history_builtin(parts); 
+        // History file operations are suppressed in child processes as they affect the parent's state.
+        // Only run the listing part if piped.
+        if (parts.size() == 1 || (parts.size() == 2 && parts[1] != "-r" && parts[1] != "-w" && parts[1] != "-a")) {
+            run_history_builtin(parts); 
+        }
         _exit(0); 
     }
 
@@ -793,7 +806,7 @@ int main() {
             continue;
         }
         
-        // Handle history as a non-pipelined builtin (now handles -r and -w)
+        // Handle history as a non-pipelined builtin (now handles -r, -w, and -a)
         if (parts[0] == "history") {
             run_history_builtin(parts);
 
