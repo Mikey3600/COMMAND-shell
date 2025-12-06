@@ -3,15 +3,15 @@
 #include <cstdlib>
 #include <sstream>
 #include <vector>
-#include <cstring>     // strdup()
-#include <cctype>      // std::isspace
-#include <unistd.h>    // fork(), execv(), access(), X_OK, getcwd(), chdir()
-#include <sys/wait.h>  // waitpid()
+#include <cstring>
+#include <cctype>
+#include <unistd.h>
+#include <sys/wait.h>
 
 // Tokenizer supporting:
-// - single quotes: characters (including backslashes) are literal
-// - double quotes: characters are literal (no escape expansion yet)
-// - backslash escaping outside quotes: \x
+// - single quotes: literal content including backslashes
+// - double quotes: \" and \\ escaping, others literal
+// - backslash escaping outside quotes
 std::vector<std::string> tokenize(const std::string& input) {
     std::vector<std::string> tokens;
     std::string current;
@@ -22,38 +22,60 @@ std::vector<std::string> tokenize(const std::string& input) {
     for (size_t i = 0; i < input.size(); i++) {
         char c = input[i];
 
-        if (escape) {
-            // Take next character literally
+        // Handle escape outside quotes
+        if (escape && !inDoubleQuote) {
             current.push_back(c);
             escape = false;
+            continue;
         }
-        else if (c == '\\' && !inSingleQuote && !inDoubleQuote) {
-            // Escape applies ONLY outside quotes
+
+        // Double quote handling
+        if (inDoubleQuote) {
+            if (c == '\\') {
+                if (i + 1 < input.size()) {
+                    char next = input[i + 1];
+                    if (next == '"' || next == '\\') {
+                        current.push_back(next);
+                        i++;
+                        continue;
+                    }
+                }
+                current.push_back('\\');
+                continue;
+            }
+        }
+
+        // Start escape outside quotes
+        if (c == '\\' && !inSingleQuote && !inDoubleQuote) {
             escape = true;
+            continue;
         }
-        else if (c == '\'' && !inDoubleQuote) {
-            // Toggle single-quote mode
+
+        // Toggle single quote mode
+        if (c == '\'' && !inDoubleQuote) {
             inSingleQuote = !inSingleQuote;
+            continue;
         }
-        else if (c == '"' && !inSingleQuote) {
-            // Toggle double-quote mode
+
+        // Toggle double quote mode
+        if (c == '"' && !inSingleQuote) {
             inDoubleQuote = !inDoubleQuote;
+            continue;
         }
-        else if (std::isspace(static_cast<unsigned char>(c)) && !inSingleQuote && !inDoubleQuote) {
-            // Token split
+
+        // Whitespace delimiter
+        if (std::isspace(static_cast<unsigned char>(c)) && !inSingleQuote && !inDoubleQuote) {
             if (!current.empty()) {
                 tokens.push_back(current);
                 current.clear();
             }
+            continue;
         }
-        else {
-            // Literal behaviour
-            current.push_back(c);
-        }
+
+        current.push_back(c);
     }
 
     if (escape) {
-        // Trailing backslash literal
         current.push_back('\\');
     }
 
@@ -95,7 +117,7 @@ int main() {
             std::string path = input.substr(3);
 
             if (path == "~") {
-                const char* home = std::getenv("HOME");
+                const char* home = getenv("HOME");
                 if (home != nullptr) {
                     if (chdir(home) != 0) {
                         std::cout << "cd: " << home << ": No such file or directory" << std::endl;
@@ -114,7 +136,7 @@ int main() {
             continue;
         }
 
-        // echo builtin
+        // echo builtin with quoting rules
         if (input.rfind("echo ", 0) == 0) {
             std::vector<std::string> parts = tokenize(input.substr(5));
 
@@ -137,7 +159,7 @@ int main() {
                 continue;
             }
 
-            char* pathEnv = std::getenv("PATH");
+            char* pathEnv = getenv("PATH");
             bool found = false;
 
             if (pathEnv != nullptr) {
@@ -146,13 +168,13 @@ int main() {
 
                 while (true) {
                     size_t end = path.find(':', start);
-                    std::string dir = (end == std::string::npos)
+                    std::string dir =
+                        (end == std::string::npos)
                         ? path.substr(start)
                         : path.substr(start, end - start);
 
                     if (!dir.empty()) {
                         std::string fullPath = dir + "/" + target;
-
                         if (access(fullPath.c_str(), X_OK) == 0) {
                             std::cout << target << " is " << fullPath << std::endl;
                             found = true;
@@ -183,7 +205,7 @@ int main() {
         args.push_back(nullptr);
 
         char* cmd = args[0];
-        char* pathEnv = std::getenv("PATH");
+        char* pathEnv = getenv("PATH");
         bool executed = false;
 
         if (pathEnv != nullptr) {
@@ -192,7 +214,8 @@ int main() {
 
             while (true) {
                 size_t end = path.find(':', start);
-                std::string dir = (end == std::string::npos)
+                std::string dir =
+                    (end == std::string::npos)
                     ? path.substr(start)
                     : path.substr(start, end - start);
 
@@ -200,7 +223,6 @@ int main() {
                     std::string fullPath = dir + "/" + cmd;
 
                     if (access(fullPath.c_str(), X_OK) == 0) {
-
                         pid_t pid = fork();
 
                         if (pid == 0) {
