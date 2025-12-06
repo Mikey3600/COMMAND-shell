@@ -80,37 +80,34 @@ std::vector<std::string> tokenize(const std::string& input) {
 
 // ======================= Readline completion (echo/exit) ====================
 
-char* builtin_names[] = { (char*)"echo ", (char*)"exit ", nullptr };
+char* builtin_names[] = { (char*)"echo", (char*)"exit", nullptr };
 
-// generator for builtin completion matches
 char* builtin_generator(const char* text, int state) {
     static int index;
-    if (!state) {
-        index = 0;
-    }
+    if (!state) index = 0;
 
     size_t len = std::strlen(text);
 
     while (builtin_names[index]) {
-        const char* candidate = builtin_names[index];
+        const char* cmd = builtin_names[index];
         index++;
 
-        // candidate includes trailing space; compare only prefix
-        if (std::strncmp(candidate, text, len) == 0) {
-            return ::strdup(candidate);
+        if (std::strncmp(cmd, text, len) == 0) {
+            // allocate cmd + space + null
+            char* result = (char*)malloc(strlen(cmd) + 2);
+            strcpy(result, cmd);
+            strcat(result, " "); // exactly ONE space
+            return result;
         }
     }
     return nullptr;
 }
 
-// completion function hooked into readline
 char** builtin_completion(const char* text, int start, int end) {
-    // Only complete at start of line (command position)
     if (start != 0) {
         return nullptr;
     }
-
-    rl_attempted_completion_over = 1; // don't do filename completion
+    rl_attempted_completion_over = 1;
     return rl_completion_matches(text, builtin_generator);
 }
 
@@ -120,12 +117,11 @@ int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
 
-    // install completion function
     rl_attempted_completion_function = builtin_completion;
 
     while (true) {
         char* line = readline("$ ");
-        if (!line) break;  // EOF / Ctrl-D
+        if (!line) break;
 
         std::string input(line);
         free(line);
@@ -144,7 +140,6 @@ int main() {
         std::string redirectOutFile;
         bool appendOut = false;
 
-        // Detect >, 1>, >>, 1>>
         for (size_t i = 0; i < parts.size(); i++) {
             if (parts[i] == ">" || parts[i] == "1>") {
                 if (i + 1 < parts.size()) {
@@ -167,7 +162,6 @@ int main() {
         std::string redirectErrFile;
         bool appendErr = false;
 
-        // Detect 2>, 2>>
         for (size_t i = 0; i < parts.size(); i++) {
             if (parts[i] == "2>") {
                 if (i + 1 < parts.size()) {
@@ -299,7 +293,7 @@ int main() {
                                 }
                             }
                             if (end == std::string::npos) break;
-                            start = end + 1;
+                           	start = end + 1;
                         }
                     }
 
@@ -359,7 +353,7 @@ int main() {
             }
 
             if (!executed) {
-                std::cerr << cmd << ": command not found" << std::endl;
+               	std::cerr << cmd << ": command not found" << std::endl;
             }
 
             for (char* ptr: args) if (ptr) free(ptr);
@@ -396,6 +390,7 @@ restore_and_exit:
 
     return 0;
 }
+
 
 
 
