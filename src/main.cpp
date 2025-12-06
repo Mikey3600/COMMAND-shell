@@ -321,10 +321,9 @@ void run_history_builtin(const std::vector<std::string> &parts) {
 
         if (option == "-a") {
             // append_history appends new history entries (since last I/O operation) to the file.
-            // Using -1 for the count appends everything new.
+            // history_length is the total number of entries. Passing this value as the argument 
+            // tells readline to append only entries since the last history file I/O operation.
             if (append_history(history_length, path.c_str()) != 0) {
-                 // history_length is the total number of entries, passing this tells readline to append
-                 // only entries since the last operation.
                 std::cerr << "history: cannot append to " << path << std::endl;
             }
             return;
