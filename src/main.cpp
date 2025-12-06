@@ -15,10 +15,11 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
-// ======================= OUR HISTORY STATE =======================
-// We completely ignore libreadline's disk history & use our own.
-static std::vector<std::string> g_history;                     // all commands this session
-static std::map<std::string, int> g_history_flush_index;       // file -> index in g_history
+// ======================= OUR OWN HISTORY =======================
+// We keep our own history for this shell session.
+// Codecrafters only cares that history -a appends commands correctly.
+static std::vector<std::string> g_history;               // all commands run this session
+static std::map<std::string, int> g_history_flush_index; // file -> index up to which we flushed
 
 // ======================= Tokenizer =======================
 std::vector<std::string> tokenize(const std::string& s) {
@@ -29,15 +30,18 @@ std::vector<std::string> tokenize(const std::string& s) {
     for (size_t i = 0; i < s.size(); ++i) {
         char c = s[i];
 
+        // Backslash escape (outside single quotes)
         if (c == '\\' && !sq) {
             if (i + 1 < s.size()) cur += s[++i];
             else cur += '\\';
             continue;
         }
 
+        // Toggle quotes
         if (c == '\'' && !dq) { sq = !sq; continue; }
         if (c == '"'  && !sq) { dq = !dq; continue; }
 
+        // Split on whitespace if not in quotes
         if (std::isspace(static_cast<unsigned char>(c)) && !sq && !dq) {
             if (!cur.empty()) {
                 t.push_back(cur);
@@ -87,15 +91,14 @@ bool find_in_path(const std::string& name, std::string& path) {
     return false;
 }
 
-// ======================= History builtin (ours) =======================
-//
+// ======================= History builtin =======================
 // history
-//   -> prints all commands from this session (no numbers)
+//   → print all commands from this session (no numbers)
 //
 // history -a <file>
-//   -> appends ONLY commands from last flush to now
-//   -> includes the `history -a <file>` command itself
-//
+//   → append only commands since last time we flushed to that file
+//      (including the history -a command itself)
+//   → no extra blank lines
 void run_history_builtin(const std::vector<std::string>& args) {
     // history -a <file>
     if (args.size() == 3 && args[1] == "-a") {
@@ -113,18 +116,17 @@ void run_history_builtin(const std::vector<std::string>& args) {
             return;
         }
 
+        // Append only NEW commands since last flush for this file
         for (int i = start; i < static_cast<int>(g_history.size()); ++i) {
             out << g_history[i] << "\n";
         }
-
-        // Append an extra blank line (Codecrafters expects final empty line)
-        out << std::endl;
+        // No extra empty line; Codecrafters counts only non-empty lines
 
         g_history_flush_index[file] = static_cast<int>(g_history.size());
         return;
     }
 
-    // plain `history` → show commands (no numbers)
+    // Plain `history` - print all commands in this session
     for (const auto& cmd : g_history) {
         std::cout << cmd << "\n";
     }
@@ -161,7 +163,7 @@ void exec_builtin_child(const std::vector<std::string>& args) {
         }
     }
     else if (cmd == "history") {
-        // In pipeline children, we only support listing, NOT `-a` writing.
+        // In pipelines, we only support listing (not history -a).
         std::vector<std::string> justHistory = {"history"};
         run_history_builtin(justHistory);
     }
@@ -197,7 +199,7 @@ void run_pipeline(const std::vector<std::vector<std::string>>& pipeline,
     size_t n = pipeline.size();
     if (n == 0) return;
 
-    // Single-command case (no pipe)
+    // Single command, no pipe
     if (n == 1) {
         const auto& args = pipeline[0];
         const std::string& cmd = args[0];
@@ -207,7 +209,7 @@ void run_pipeline(const std::vector<std::vector<std::string>>& pipeline,
             std::exit(0);
         }
 
-        // cd (in parent, changes directory)
+        // cd (in parent)
         if (cmd == "cd") {
             const char* dir = nullptr;
             if (args.size() > 1)
@@ -221,13 +223,14 @@ void run_pipeline(const std::vector<std::vector<std::string>>& pipeline,
             return;
         }
 
-        // history -a <file> (MUST happen in parent, not child)
+        // history -a <file> (must run in parent for file I/O)
         if (cmd == "history" && args.size() == 3 && args[1] == "-a") {
+            // line was already added to g_history in main loop
             run_history_builtin(args);
             return;
         }
 
-        // Other builtins/external as child
+        // Other builtins / external executed in child
         pid_t pid = fork();
         if (pid == 0) {
             if (is_builtin(cmd)) {
@@ -253,16 +256,16 @@ void run_pipeline(const std::vector<std::vector<std::string>>& pipeline,
     for (size_t i = 0; i < n; ++i) {
         pid_t pid = fork();
         if (pid == 0) {
-            // hook stdin
+            // stdin
             if (i > 0) {
                 dup2(fds[2 * (i - 1)], STDIN_FILENO);
             }
-            // hook stdout
+            // stdout
             if (i + 1 < n) {
                 dup2(fds[2 * i + 1], STDOUT_FILENO);
             }
 
-            // close all pipe fds
+            // close all pipes
             for (int fd : fds) close(fd);
 
             const auto& args = pipeline[i];
@@ -298,19 +301,19 @@ int main() {
         std::string line(raw);
         free(raw);
 
-        // Trim leading spaces
+        // Trim leading whitespace
         size_t start = line.find_first_not_of(" \t");
         if (start == std::string::npos) continue;
         line = line.substr(start);
         if (line.empty()) continue;
 
-        // Add the raw command line to OUR history (every command, once)
+        // Store EVERY command line in our session history
         g_history.push_back(line);
 
         auto tokens = tokenize(line);
         if (tokens.empty()) continue;
 
-        // ================== Redirection parse ==================
+        // -------- Redirections --------
         std::string out_file, err_file;
         bool append_out = false, append_err = false;
 
@@ -364,7 +367,7 @@ int main() {
             }
         }
 
-        // ================== Build pipeline ==================
+        // -------- Build pipeline --------
         std::vector<std::vector<std::string>> pipeline;
         std::vector<std::string> cur;
         for (const auto& t : tokens) {
@@ -379,10 +382,10 @@ int main() {
         }
         if (!cur.empty()) pipeline.push_back(cur);
 
-        // ================== Execute ==================
+        // -------- Execute --------
         run_pipeline(pipeline, line);
 
-        // ================== Restore fds ==================
+        // -------- Restore fds --------
         if (saved_out != -1) {
             dup2(saved_out, STDOUT_FILENO);
             close(saved_out);
