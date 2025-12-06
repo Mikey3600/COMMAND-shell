@@ -141,6 +141,35 @@ std::string longest_common_prefix(const std::vector<std::string> &v) {
 static std::string last_prefix;
 static int tab_count = 0;
 
+// ======================= type helper: find executable in PATH =======================
+
+bool find_executable_in_path(const std::string &name, std::string &fullPath) {
+    char *pathEnv = std::getenv("PATH");
+    if (!pathEnv) return false;
+
+    std::string path(pathEnv);
+    size_t start = 0;
+
+    while (true) {
+        size_t end = path.find(':', start);
+        std::string dir = (end == std::string::npos)
+                            ? path.substr(start)
+                            : path.substr(start, end - start);
+
+        if (!dir.empty()) {
+            std::string full = dir + "/" + name;
+            if (access(full.c_str(), X_OK) == 0) {
+                fullPath = full;
+                return true;
+            }
+        }
+
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return false;
+}
+
 // ======================= TAB handler with LCP =======================
 
 int tab_handler(int count, int key) {
@@ -170,9 +199,8 @@ int tab_handler(int count, int key) {
     std::vector<std::string> path_matches = find_path_matches(prefix);
     std::sort(path_matches.begin(), path_matches.end());
 
-    // Multiple builtin matches (rare) → treat like multi-path matches
+    // Multiple builtin matches -> apply LCP or multi-list
     if (builtin_matches.size() > 1) {
-        // LCP on builtins if possible
         std::string lcp = longest_common_prefix(builtin_matches);
         if (!lcp.empty() && lcp.size() > prefix.size()) {
             rl_replace_line(lcp.c_str(), 1);
@@ -206,7 +234,7 @@ int tab_handler(int count, int key) {
         return 0;
     }
 
-    // No path matches either → bell
+    // No PATH matches either → bell
     if (path_matches.empty()) {
         write(STDOUT_FILENO, "\a", 1);
         return 0;
@@ -227,7 +255,6 @@ int tab_handler(int count, int key) {
     // Multiple PATH matches → use LCP
     std::string lcp = longest_common_prefix(path_matches);
     if (!lcp.empty() && lcp.size() > prefix.size()) {
-        // Extend to LCP (xyz_ -> xyz_foo, etc.)
         rl_replace_line(lcp.c_str(), 1);
         rl_point = lcp.size();
         rl_redisplay();
@@ -236,7 +263,7 @@ int tab_handler(int count, int key) {
         return 0;
     }
 
-    // LCP == prefix → fall back to bell + second TAB list behavior
+    // LCP == prefix → bell on first TAB, list on second TAB
     if (prefix != last_prefix) tab_count = 0;
     last_prefix = prefix;
     tab_count++;
@@ -260,33 +287,124 @@ int tab_handler(int count, int key) {
     return 0;
 }
 
-// ======================= type builtin helper =======================
+// ======================= Run external command (single) =======================
 
-bool find_executable_in_path(const std::string &name, std::string &fullPath) {
-    char *pathEnv = std::getenv("PATH");
-    if (!pathEnv) return false;
-
-    std::string path(pathEnv);
-    size_t start = 0;
-
-    while (true) {
-        size_t end = path.find(':', start);
-        std::string dir = (end == std::string::npos)
-                            ? path.substr(start)
-                            : path.substr(start, end - start);
-
-        if (!dir.empty()) {
-            std::string full = dir + "/" + name;
-            if (access(full.c_str(), X_OK) == 0) {
-                fullPath = full;
-                return true;
-            }
-        }
-
-        if (end == std::string::npos) break;
-        start = end + 1;
+void run_single_external(const std::vector<std::string> &parts) {
+    std::vector<char*> argv;
+    for (auto &s : parts) {
+        argv.push_back(strdup(s.c_str()));
     }
-    return false;
+    argv.push_back(nullptr);
+
+    char *cmd = argv[0];
+    bool executed = false;
+    char *pathEnv = std::getenv("PATH");
+
+    if (pathEnv) {
+        std::string path(pathEnv);
+        size_t start = 0;
+
+        while (true) {
+            size_t end = path.find(':', start);
+            std::string dir = (end == std::string::npos)
+                                ? path.substr(start)
+                                : path.substr(start, end - start);
+
+            if (!dir.empty()) {
+                std::string full = dir + "/" + cmd;
+                if (access(full.c_str(), X_OK) == 0) {
+                    pid_t pid = fork();
+                    if (pid == 0) {
+                        execv(full.c_str(), argv.data());
+                        std::exit(1);
+                    } else {
+                        waitpid(pid, nullptr, 0);
+                    }
+                    executed = true;
+                    break;
+                }
+            }
+
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+    }
+
+    if (!executed) {
+        std::cerr << cmd << ": command not found" << std::endl;
+    }
+
+    for (char *p : argv) {
+        if (p) free(p);
+    }
+}
+
+// ======================= Run pipeline: cmd1 | cmd2 =======================
+
+void run_pipeline(const std::vector<std::string> &leftParts,
+                  const std::vector<std::string> &rightParts) {
+    if (leftParts.empty() || rightParts.empty()) {
+        return;
+    }
+
+    std::string leftCmd = leftParts[0];
+    std::string rightCmd = rightParts[0];
+
+    std::string leftPath, rightPath;
+    if (!find_executable_in_path(leftCmd, leftPath)) {
+        std::cerr << leftCmd << ": command not found" << std::endl;
+        return;
+    }
+    if (!find_executable_in_path(rightCmd, rightPath)) {
+        std::cerr << rightCmd << ": command not found" << std::endl;
+        return;
+    }
+
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        std::perror("pipe");
+        return;
+    }
+
+    // Build argv for left
+    std::vector<char*> argvLeft;
+    for (auto &s : leftParts) argvLeft.push_back(strdup(s.c_str()));
+    argvLeft.push_back(nullptr);
+
+    // Build argv for right
+    std::vector<char*> argvRight;
+    for (auto &s : rightParts) argvRight.push_back(strdup(s.c_str()));
+    argvRight.push_back(nullptr);
+
+    pid_t pid1 = fork();
+    if (pid1 == 0) {
+        // Left child: stdout → pipe write end
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        execv(leftPath.c_str(), argvLeft.data());
+        std::exit(1);
+    }
+
+    pid_t pid2 = fork();
+    if (pid2 == 0) {
+        // Right child: stdin ← pipe read end
+        dup2(pipefd[0], STDIN_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        execv(rightPath.c_str(), argvRight.data());
+        std::exit(1);
+    }
+
+    // Parent
+    close(pipefd[0]);
+    close(pipefd[1]);
+
+    waitpid(pid1, nullptr, 0);
+    waitpid(pid2, nullptr, 0);
+
+    for (char *p : argvLeft) if (p) free(p);
+    for (char *p : argvRight) if (p) free(p);
 }
 
 // ======================= MAIN SHELL =======================
@@ -490,57 +608,38 @@ int main() {
             continue;
         }
 
-        // ======================= EXTERNAL EXECUTION =======================
+        // ======================= PIPELINE DETECTION =======================
 
-        {
-            std::vector<char*> argv;
-            for (auto &s : parts) {
-                argv.push_back(strdup(s.c_str()));
-            }
-            argv.push_back(nullptr);
-
-            char *cmd = argv[0];
-            bool executed = false;
-            char *pathEnv = std::getenv("PATH");
-
-            if (pathEnv) {
-                std::string path(pathEnv);
-                size_t start = 0;
-
-                while (true) {
-                    size_t end = path.find(':', start);
-                    std::string dir = (end == std::string::npos)
-                                        ? path.substr(start)
-                                        : path.substr(start, end - start);
-
-                    if (!dir.empty()) {
-                        std::string full = dir + "/" + cmd;
-                        if (access(full.c_str(), X_OK) == 0) {
-                            pid_t pid = fork();
-                            if (pid == 0) {
-                                execv(full.c_str(), argv.data());
-                                std::exit(1);
-                            } else {
-                                waitpid(pid, nullptr, 0);
-                            }
-                            executed = true;
-                            break;
-                        }
-                    }
-
-                    if (end == std::string::npos) break;
-                    start = end + 1;
-                }
-            }
-
-            if (!executed) {
-                std::cerr << cmd << ": command not found" << std::endl;
-            }
-
-            for (char *p : argv) {
-                if (p) free(p);
+        size_t pipePos = parts.size();
+        for (size_t i = 0; i < parts.size(); ++i) {
+            if (parts[i] == "|") {
+                pipePos = i;
+                break;
             }
         }
+
+        if (pipePos != parts.size()) {
+            std::vector<std::string> leftParts(parts.begin(), parts.begin() + pipePos);
+            std::vector<std::string> rightParts(parts.begin() + pipePos + 1, parts.end());
+
+            if (!leftParts.empty() && !rightParts.empty()) {
+                run_pipeline(leftParts, rightParts);
+            }
+
+            if (savedStdout != -1) {
+                dup2(savedStdout, STDOUT_FILENO);
+                close(savedStdout);
+            }
+            if (savedStderr != -1) {
+                dup2(savedStderr, STDERR_FILENO);
+                close(savedStderr);
+            }
+            continue;
+        }
+
+        // ======================= EXTERNAL EXECUTION (no pipe) =======================
+
+        run_single_external(parts);
 
         if (savedStdout != -1) {
             dup2(savedStdout, STDOUT_FILENO);
@@ -554,6 +653,7 @@ int main() {
 
     return 0;
 }
+
 
 
 
