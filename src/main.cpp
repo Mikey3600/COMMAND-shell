@@ -65,7 +65,7 @@ bool find_in_path(const std::string& name, std::string& path) {
     return false;
 }
 
-// ======================= History builtin =======================
+// ======================= History builtin – FIXED NO NUMBERS =======================
 void run_history_builtin(const std::vector<std::string>& args) {
     if (args.size() == 3 && args[1] == "-a") {
         const std::string& file = args[2];
@@ -85,15 +85,15 @@ void run_history_builtin(const std::vector<std::string>& args) {
         return;
     }
 
-    // simple listing
+    // When user types just `history`, print ONLY the commands (no numbers)
     HIST_ENTRY** list = history_list();
     if (!list) return;
     for (int i = 0; list[i]; ++i) {
-        printf("%5d  %s\n", history_base + i, list[i]->line);
+        std::cout << list[i]->line << '\n';
     }
 }
 
-// ======================= Builtin child exec =======================
+// ======================= Builtin child =======================
 void exec_builtin_child(const std::vector<std::string>& args) {
     const std::string& cmd = args[0];
     if (cmd == "echo") {
@@ -138,7 +138,6 @@ void run_pipeline(const std::vector<std::vector<std::string>>& pipeline, const s
     size_t n = pipeline.size();
     if (n == 0) return;
 
-    // Single command
     if (n == 1) {
         const auto& args = pipeline[0];
         const std::string& cmd = args[0];
@@ -152,14 +151,14 @@ void run_pipeline(const std::vector<std::vector<std::string>>& pipeline, const s
             return;
         }
 
-        // Special case: history -a file
+        // history -a must be added to history BEFORE we append
         if (cmd == "history" && args.size() == 3 && args[1] == "-a") {
-            add_history(original_line.c_str());        // add BEFORE append_history sees it
+            add_history(original_line.c_str());
             run_history_builtin(args);
             return;
         }
 
-        // Other builtins & external commands
+        // Other builtins & external
         pid_t pid = fork();
         if (pid == 0) {
             if (is_builtin(cmd)) exec_builtin_child(args);
@@ -177,7 +176,7 @@ void run_pipeline(const std::vector<std::vector<std::string>>& pipeline, const s
     for (size_t i = 0; i < n; ++i) {
         pid_t pid = fork();
         if (pid == 0) {
-            if (i > 0)  dup2(fds[2*(i-1)],   STDIN_FILENO);
+            if (i > 0) dup2(fds[2*(i-1)],   STDIN_FILENO);
             if (i+1 < n) dup2(fds[2*i + 1], STDOUT_FILENO);
             for (int fd : fds) close(fd);
 
@@ -223,7 +222,7 @@ int main() {
         auto tokens = tokenize(line);
         if (tokens.empty()) continue;
 
-        // Redirection handling
+        // Redirection
         std::string out_file, err_file;
         bool append_out = false, append_err = false;
 
@@ -269,7 +268,7 @@ int main() {
         // Execute
         run_pipeline(pipeline, line);
 
-        // Add to history (except when we already did it for history -a)
+        // Add to history (except when we already added it for `history -a`)
         bool is_history_a = (pipeline.size() == 1 && pipeline[0].size() == 3 &&
                              pipeline[0][0] == "history" && pipeline[0][1] == "-a");
         if (!is_history_a) {
