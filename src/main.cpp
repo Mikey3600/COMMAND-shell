@@ -156,7 +156,6 @@ void save_history_to_file(const string& filename) {
         string line = shell_history[i] + "\n";
         write(fd, line.c_str(), line.size());
     }
-    write(fd, "\n", 1);
     close(fd);
 }
 
@@ -663,7 +662,6 @@ int main() {
     
     return 0;
 }
-
 
 
 
