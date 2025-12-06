@@ -1,46 +1,50 @@
-#include <iostream>
-#include <string>
+#include <filesystem>
+#include <unistd.h> // for access()
 
-int main() {
-    std::cout << std::unitbuf;
-    std::cerr << std::unitbuf;
+else if (input.rfind("type ", 0) == 0) {
+    std::string target = input.substr(5);
 
-    while (true) {
-        std::cout << "$ ";
-
-        std::string input;
-        if (!std::getline(std::cin, input)) {
-            break;
-        }
-
-        if (input == "exit") {
-            break;
-        }
-
-        // Handle echo command
-        if (input.rfind("echo ", 0) == 0) {
-            std::string text = input.substr(5);
-            std::cout << text << std::endl;
-        }
-        // Handle type command
-        else if (input.rfind("type ", 0) == 0) {
-            std::string target = input.substr(5);
-
-            // Check known builtins
-            if (target == "echo" || target == "exit" || target == "type") {
-                std::cout << target << " is a shell builtin" << std::endl;
-            } else {
-                std::cout << target << ": not found" << std::endl;
-            }
-        }
-        // Default fallback
-        else {
-            std::cout << input << ": command not found" << std::endl;
-        }
+    // Builtins
+    if (target == "echo" || target == "exit" || target == "type") {
+        std::cout << target << " is a shell builtin" << std::endl;
+        continue;
     }
 
-    return 0;
+    // Get PATH variable
+    char* pathEnv = std::getenv("PATH");
+    if (pathEnv != nullptr) {
+        std::string path(pathEnv);
+
+        // Split PATH by ':' (Linux environment here)
+        size_t start = 0;
+        while (true) {
+            size_t end = path.find(':', start);
+            std::string dir = (end == std::string::npos)
+                                  ? path.substr(start)
+                                  : path.substr(start, end - start);
+
+            if (!dir.empty()) {
+                std::string fullPath = dir + "/" + target;
+
+                // Check executable existence & permission
+                if (access(fullPath.c_str(), X_OK) == 0) {
+                    std::cout << target << " is " << fullPath << std::endl;
+                    break; // Found — stop searching
+                }
+            }
+
+            if (end == std::string::npos) {
+                std::cout << target << ": not found" << std::endl;
+                break;
+            }
+
+            start = end + 1;
+        }
+    } else {
+        std::cout << target << ": not found" << std::endl;
+    }
 }
+
 
 
 
