@@ -9,7 +9,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <dirent.h>
-#include <stdexcept> // Added for std::stoi
+#include <stdexcept> 
 
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -564,10 +564,13 @@ int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
 
+    // Binds TAB to the custom handler, but the arrow keys use readline's default
     rl_bind_key('\t', tab_handler);
     
     while (true) {
-        char *line = readline("$ ");
+        // readline() automatically enables history navigation (up/down arrow) 
+        // and line editing once add_history() is used.
+        char *line = readline("$ "); 
         if (!line) break;
 
         std::string input(line);
