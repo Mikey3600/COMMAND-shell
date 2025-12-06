@@ -64,14 +64,7 @@ bool find_in_path(const std::string& name, std::string& path){
     return false;
 }
 
-// ======================= Builtins =======================
-const std::vector<std::string> builtins={"echo","exit","pwd","cd","type","history"};
-
-bool is_builtin(const std::string&s){
-    return std::find(builtins.begin(),builtins.end(),s)!=builtins.end();
-}
-
-// ======================= History handling =======================
+// ======================= History Handling =======================
 
 void history_append_file(const std::string& file){
     int start=0;
@@ -95,21 +88,17 @@ void history_write_file(const std::string& file){
         out<<cmd<<'\n';
 }
 
-// Plain `history`
-void run_history_builtin(const std::vector<std::string>& args){
-    if(args.size()==3 && args[1]=="-a"){
-        history_append_file(args[2]);
-        return;
+void history_read_file(const std::string& file){
+    std::ifstream in(file);
+    if(!in)return;
+    std::string line;
+    while(std::getline(in,line)){
+        if(!line.empty())
+            g_history.push_back(line);
     }
-    if(args.size()==3 && args[1]=="-w"){
-        history_write_file(args[2]);
-        return;
-    }
-    for(const auto& cmd: g_history)
-        std::cout<<cmd<<"\n";
 }
 
-// ======================= Builtin execution in pipeline =======================
+// ======================= Builtin Execution =======================
 void exec_builtin_child(const std::vector<std::string>& args){
     const std::string& cmd=args[0];
 
@@ -126,7 +115,11 @@ void exec_builtin_child(const std::vector<std::string>& args){
     }
     else if(cmd=="type" && args.size()>1){
         std::string t=args[1];
-        if(is_builtin(t))
+        if(std::find(
+               std::begin({"echo","exit","pwd","cd","type","history"}),
+               std::end({"echo","exit","pwd","cd","type","history"}),
+               t
+        ) != std::end({"echo","exit","pwd","cd","type","history"}))
             std::cout<<t<<" is a shell builtin\n";
         else{
             std::string p;
@@ -135,8 +128,9 @@ void exec_builtin_child(const std::vector<std::string>& args){
         }
     }
     else if(cmd=="history"){
-        for(const auto& cmdline:g_history)
-            std::cout<<cmdline<<"\n";
+        for(size_t i=0;i<g_history.size();i++){
+            printf("    %lu  %s\n", i+1, g_history[i].c_str());
+        }
     }
 
     _exit(0);
@@ -182,6 +176,7 @@ void run_pipeline(const std::vector<std::vector<std::string>>& pipeline){
         if(cmd=="history" && args.size()==3){
             if(args[1]=="-a")history_append_file(args[2]);
             else if(args[1]=="-w")history_write_file(args[2]);
+            else if(args[1]=="-r")history_read_file(args[2]);
             return;
         }
 
@@ -247,46 +242,6 @@ int main(){
         auto tokens=tokenize(line);
         if(tokens.empty())continue;
 
-        std::string out_file, err_file;
-        bool append_out=false, append_err=false;
-
-        for(size_t i=0;i<tokens.size();){
-            const std::string&t=tokens[i];
-            if((t=="1>"||t==">")&&i+1<tokens.size()){
-                out_file=tokens[i+1];
-                append_out=false;
-                tokens.erase(tokens.begin()+i,tokens.begin()+i+2);
-            }else if((t=="1>>"||t==">>")&&i+1<tokens.size()){
-                out_file=tokens[i+1];
-                append_out=true;
-                tokens.erase(tokens.begin()+i,tokens.begin()+i+2);
-            }else if(t=="2>"&&i+1<tokens.size()){
-                err_file=tokens[i+1];
-                append_err=false;
-                tokens.erase(tokens.begin()+i,tokens.begin()+i+2);
-            }else if(t=="2>>"&&i+1<tokens.size()){
-                err_file=tokens[i+1];
-                append_err=true;
-                tokens.erase(tokens.begin()+i,tokens.begin()+i+2);
-            }else i++;
-        }
-
-        int saved_out=-1, saved_err=-1;
-        if(!out_file.empty()){
-            saved_out=dup(STDOUT_FILENO);
-            int fd=open(out_file.c_str(),
-                        O_CREAT|O_WRONLY|(append_out?O_APPEND:O_TRUNC),
-                        0644);
-            if(fd!=-1){dup2(fd,STDOUT_FILENO);close(fd);}
-        }
-        if(!err_file.empty()){
-            saved_err=dup(STDERR_FILENO);
-            int fd=open(err_file.c_str(),
-                        O_CREAT|O_WRONLY|(append_err?O_APPEND:O_TRUNC),
-                        0644);
-            if(fd!=-1){dup2(fd,STDERR_FILENO);close(fd);}
-        }
-
         std::vector<std::vector<std::string>> pipeline;
         std::vector<std::string> cur;
         for(const auto&t:tokens){
@@ -297,9 +252,6 @@ int main(){
         if(!cur.empty())pipeline.push_back(cur);
 
         run_pipeline(pipeline);
-
-        if(saved_out!=-1){dup2(saved_out,STDOUT_FILENO);close(saved_out);}
-        if(saved_err!=-1){dup2(saved_err,STDERR_FILENO);close(saved_err);}
     }
     return 0;
 }
