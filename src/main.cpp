@@ -9,7 +9,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 
-// Tokenizer supporting quoting & escaping
+// Tokenizer - supports quoting, escaping, concatenation
 std::vector<std::string> tokenize(const std::string& input) {
     std::vector<std::string> tokens;
     std::string current;
@@ -87,14 +87,14 @@ int main() {
         std::vector<std::string> parts = tokenize(input);
         if (parts.empty()) continue;
 
-        // ====================================================================================
-        // Redirection Detection
-        // ====================================================================================
+        // ======================================================================
+        // REDIRECTION DETECTION
+        // ======================================================================
 
         std::string redirectOutFile;
         bool appendOut = false;
 
-        // detect > or >>
+        // Detect > 1> >> 1>>
         for (size_t i = 0; i < parts.size(); i++) {
             if (parts[i] == ">" || parts[i] == "1>") {
                 if (i + 1 < parts.size()) {
@@ -115,19 +115,31 @@ int main() {
         }
 
         std::string redirectErrFile;
+        bool appendErr = false;
+
+        // Detect 2> and 2>>
         for (size_t i = 0; i < parts.size(); i++) {
             if (parts[i] == "2>") {
                 if (i + 1 < parts.size()) {
                     redirectErrFile = parts[i + 1];
+                    appendErr = false;
+                    parts.erase(parts.begin() + i, parts.begin() + i + 2);
+                }
+                break;
+            }
+            if (parts[i] == "2>>") {
+                if (i + 1 < parts.size()) {
+                    redirectErrFile = parts[i + 1];
+                    appendErr = true;
                     parts.erase(parts.begin() + i, parts.begin() + i + 2);
                 }
                 break;
             }
         }
 
-        // ====================================================================================
-        // Apply Redirections (stdout + stderr)
-        // ====================================================================================
+        // ======================================================================
+        // APPLY REDIRECTIONS
+        // ======================================================================
 
         int savedStdout = -1;
         if (!redirectOutFile.empty()) {
@@ -140,7 +152,6 @@ int main() {
                 flags |= O_TRUNC;
 
             int fd = open(redirectOutFile.c_str(), flags, 0644);
-
             if (fd >= 0) {
                 dup2(fd, STDOUT_FILENO);
                 close(fd);
@@ -151,18 +162,22 @@ int main() {
         if (!redirectErrFile.empty()) {
             savedStderr = dup(STDERR_FILENO);
 
-            int fd = open(redirectErrFile.c_str(),
-                          O_CREAT | O_WRONLY | O_TRUNC,
-                          0644);
+            int flags = O_CREAT | O_WRONLY;
+            if (appendErr)
+                flags |= O_APPEND;
+            else
+                flags |= O_TRUNC;
+
+            int fd = open(redirectErrFile.c_str(), flags, 0644);
             if (fd >= 0) {
                 dup2(fd, STDERR_FILENO);
                 close(fd);
             }
         }
 
-        // ====================================================================================
-        // Builtins
-        // ====================================================================================
+        // ======================================================================
+        // BUILTINS
+        // ======================================================================
 
         if (parts.size() == 1 && parts[0] == "exit") {
             goto restore_and_exit;
@@ -246,9 +261,9 @@ int main() {
             goto restore_std;
         }
 
-        // ====================================================================================
-        // External Execution
-        // ====================================================================================
+        // ======================================================================
+        // EXTERNAL EXECUTION
+        // ======================================================================
 
         {
             std::vector<char*> args;
@@ -282,6 +297,7 @@ int main() {
                             } else {
                                 waitpid(pid, nullptr, 0);
                             }
+
                             executed = true;
                             break;
                         }
