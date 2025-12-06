@@ -76,8 +76,9 @@ std::vector<std::string> tokenize(const std::string &input) {
 
 // ======================= Builtins list =======================
 
+// FIX: Removed Markdown formatting (**) and trailing comment from initializer list
 std::vector<std::string> builtin_list = {
-    "echo", "exit", "pwd", "cd", "type", **"history"** // <-- ADDED history
+    "echo", "exit", "pwd", "cd", "type", "history"
 };
 
 bool is_builtin(const std::string &cmd) {
@@ -292,7 +293,7 @@ int tab_handler(int count, int key) {
     return 0;
 }
 
-// ** NEW FUNCTION: Handles the logic for the history builtin **
+// Handles the logic for the history builtin
 void run_history_builtin() {
     HISTORY_STATE *state = history_get_history_state();
     if (!state) return;
@@ -304,13 +305,13 @@ void run_history_builtin() {
         int line_number = history_base;
         for (HIST_ENTRY **h = history; *h; h++) {
             // Output format: [Spaces] [Number] [Spaces] [Command]
-            // We use printf-style formatting to ensure two spaces between number and command
-            // history_list() returns entries starting from history_base
+            // We use standard stream output for the required format: "    1  command"
             std::cout << "    " << line_number << "  " << (*h)->line << "\n";
             line_number++;
         }
     }
 }
+
 
 // ======================= Builtins in child (for pipelines) =======================
 
@@ -362,7 +363,6 @@ void run_builtin_child(const std::vector<std::string> &parts) {
         _exit(0);
     }
     
-    // <-- ADDED history handling for pipeline/child processes -->
     if (cmd == "history") {
         run_history_builtin();
         _exit(0); // Terminate the child process
@@ -536,9 +536,8 @@ int main() {
 
     rl_bind_key('\t', tab_handler);
     
-    // Load history from previous sessions if needed, though for the test 
-    // it's enough that history is recorded for the current session.
-    // read_history(".my_shell_history");
+    // Ensure history is active for the current session
+    // This is handled by default with add_history, but can be configured here.
 
     while (true) {
         char *line = readline("$ ");
@@ -677,8 +676,6 @@ int main() {
                 dup2(savedStderr, STDERR_FILENO);
                 close(savedStderr);
             }
-            // ** Optional: save history before exiting **
-            // write_history(".my_shell_history"); 
             break;
         }
 
@@ -744,7 +741,7 @@ int main() {
             continue;
         }
         
-        // <-- ADDED history handling for main loop -->
+        // Handle history as a non-pipelined builtin
         if (parts.size() == 1 && parts[0] == "history") {
             run_history_builtin();
             if (savedStdout != -1) {
@@ -757,6 +754,7 @@ int main() {
             }
             continue;
         }
+
 
         if (parts[0] == "type") {
             if (parts.size() > 1) {
