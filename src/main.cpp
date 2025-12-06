@@ -1,14 +1,10 @@
 #include <iostream>
 #include <string>
+#include <cstdlib>
 #include <sstream>
 #include <vector>
-#include <cstdlib>
-#include <filesystem>
-#include <windows.h>   // Windows process API
-#include <io.h>        // access() equivalent
-
-#define access _access
-#define X_OK 4
+#include <unistd.h>     // fork(), execv(), access(), X_OK
+#include <sys/wait.h>   // waitpid()
 
 int main() {
     std::cout << std::unitbuf;
@@ -18,10 +14,14 @@ int main() {
         std::cout << "$ ";
 
         std::string input;
-        if (!std::getline(std::cin, input)) break;
+        if (!std::getline(std::cin, input)) {
+            break;
+        }
 
         // exit builtin
-        if (input == "exit") break;
+        if (input == "exit") {
+            break;
+        }
 
         // echo builtin
         if (input.rfind("echo ", 0) == 0) {
@@ -34,6 +34,7 @@ int main() {
         if (input.rfind("type ", 0) == 0) {
             std::string target = input.substr(5);
 
+            // Builtins
             if (target == "echo" || target == "exit" || target == "type") {
                 std::cout << target << " is a shell builtin" << std::endl;
                 continue;
@@ -47,14 +48,13 @@ int main() {
                 size_t start = 0;
 
                 while (true) {
-                    size_t end = path.find(';', start);
-
+                    size_t end = path.find(':', start);
                     std::string dir = (end == std::string::npos)
                         ? path.substr(start)
                         : path.substr(start, end - start);
 
                     if (!dir.empty()) {
-                        std::string fullPath = dir + "\\" + target + ".exe";
+                        std::string fullPath = dir + "/" + target;
 
                         if (access(fullPath.c_str(), X_OK) == 0) {
                             std::cout << target << " is " << fullPath << std::endl;
@@ -75,16 +75,17 @@ int main() {
             continue;
         }
 
-        // External execution — Windows version
-        // (Works for EXE files; not Linux binaries)
+        // ---------- external command execution ----------
         std::istringstream iss(input);
-        std::vector<std::string> parts;
+        std::vector<char*> args;
         std::string token;
-        while (iss >> token) parts.push_back(token);
 
-        if (parts.empty()) continue;
+        while (iss >> token) {
+            args.push_back(strdup(token.c_str()));
+        }
+        args.push_back(nullptr);
 
-        std::string cmd = parts[0];
+        char* cmd = args[0];
         char* pathEnv = std::getenv("PATH");
         bool executed = false;
 
@@ -93,21 +94,25 @@ int main() {
             size_t start = 0;
 
             while (true) {
-                size_t end = path.find(';', start);
+                size_t end = path.find(':', start);
                 std::string dir = (end == std::string::npos)
                     ? path.substr(start)
                     : path.substr(start, end - start);
 
                 if (!dir.empty()) {
-                    std::string fullPath = dir + "\\" + cmd + ".exe";
+                    std::string fullPath = dir + "/" + cmd;
 
                     if (access(fullPath.c_str(), X_OK) == 0) {
-                        std::string commandLine = fullPath;
-                        for (size_t i = 1; i < parts.size(); i++) {
-                            commandLine += " " + parts[i];
+
+                        pid_t pid = fork();
+
+                        if (pid == 0) { // child
+                            execv(fullPath.c_str(), args.data());
+                            exit(1);
+                        } else { // parent
+                            waitpid(pid, nullptr, 0);
                         }
 
-                        system(commandLine.c_str());
                         executed = true;
                         break;
                     }
@@ -120,6 +125,10 @@ int main() {
 
         if (!executed) {
             std::cout << cmd << ": command not found" << std::endl;
+        }
+
+        for (char* ptr : args) {
+            if (ptr) free(ptr);
         }
     }
 
