@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <stdexcept> // Added for std::stoi
 
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -292,22 +293,43 @@ int tab_handler(int count, int key) {
     return 0;
 }
 
-// Handles the logic for the history builtin
-void run_history_builtin() {
+/**
+ * @brief Handles the logic for the history builtin, optionally limiting the output.
+ * * @param limit The maximum number of history entries to display. If 0 or greater than 
+ * the total history count, all entries are displayed.
+ */
+void run_history_builtin(int limit) {
     HISTORY_STATE *state = history_get_history_state();
     if (!state) return;
 
     // Get the list of history entries
     HIST_ENTRY **history = history_list();
+    if (!history) return;
 
-    if (history) {
-        // history_base is the number of the first entry in the history list
-        int line_number = history_base;
-        for (HIST_ENTRY **h = history; *h; h++) {
-            // Output format: Four spaces, number, two spaces, command
-            std::cout << "    " << line_number << "  " << (*h)->line << "\n";
-            line_number++;
-        }
+    // Calculate the total number of entries
+    int history_count = 0;
+    for (HIST_ENTRY **h = history; *h; h++) {
+        history_count++;
+    }
+
+    // Determine the number of entries to display
+    int display_count = history_count;
+    if (limit > 0 && limit < history_count) {
+        display_count = limit;
+    }
+
+    // Calculate the index in the history array where printing should start.
+    // Start index is calculated relative to the full list count.
+    int start_index = history_count - display_count;
+
+    // Calculate the correct starting line number for output (history_base is the number of the first entry)
+    int line_number = history_base + start_index;
+
+    // Loop from the calculated start index
+    for (int i = start_index; i < history_count; i++) {
+        // Output format: Four spaces, number, two spaces, command
+        std::cout << "    " << line_number << "  " << history[i]->line << "\n";
+        line_number++;
     }
 }
 
@@ -364,7 +386,15 @@ void run_builtin_child(const std::vector<std::string> &parts) {
     
     // History handling for pipeline/child processes
     if (cmd == "history") {
-        run_history_builtin();
+        int limit = 0;
+        if (parts.size() > 1) {
+            try {
+                limit = std::stoi(parts[1]);
+            } catch (const std::exception& e) {
+                // Ignore parsing errors for simplicity
+            }
+        }
+        run_history_builtin(limit);
         _exit(0); // Terminate the child process
     }
 
@@ -740,8 +770,19 @@ int main() {
         }
         
         // Handle history as a non-pipelined builtin
-        if (parts.size() == 1 && parts[0] == "history") {
-            run_history_builtin();
+        if (parts[0] == "history") {
+            int limit = 0;
+            if (parts.size() > 1) {
+                try {
+                    // Attempt to parse the argument as an integer
+                    limit = std::stoi(parts[1]);
+                } catch (const std::exception& e) {
+                    // If parsing fails, just treat it as 0 (no limit)
+                }
+            }
+            
+            run_history_builtin(limit);
+
             if (savedStdout != -1) {
                 dup2(savedStdout, STDOUT_FILENO);
                 close(savedStdout);
