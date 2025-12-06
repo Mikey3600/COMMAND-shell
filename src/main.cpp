@@ -22,33 +22,53 @@ string tokenize_input(const string& input, vector<string>& tokens) {
     string current;
     bool in_single_quote = false;
     bool in_double_quote = false;
-    bool escape_next = false;
     
     for (size_t i = 0; i < input.size(); i++) {
         char c = input[i];
         
-        if (escape_next) {
-            current += c;
-            escape_next = false;
+        if (in_single_quote) {
+            if (c == '\'') {
+                in_single_quote = false;
+            } else {
+                current += c;
+            }
             continue;
         }
         
-        if (c == '\\' && !in_single_quote) {
-            escape_next = true;
+        if (in_double_quote) {
+            if (c == '\\' && i + 1 < input.size()) {
+                char next = input[i + 1];
+                if (next == '"' || next == '\\') {
+                    current += next;
+                    i++;
+                } else {
+                    current += c;
+                }
+            } else if (c == '"') {
+                in_double_quote = false;
+            } else {
+                current += c;
+            }
             continue;
         }
         
-        if (c == '\'' && !in_double_quote) {
-            in_single_quote = !in_single_quote;
+        if (c == '\\' && i + 1 < input.size()) {
+            current += input[i + 1];
+            i++;
             continue;
         }
         
-        if (c == '"' && !in_single_quote) {
-            in_double_quote = !in_double_quote;
+        if (c == '\'') {
+            in_single_quote = true;
             continue;
         }
         
-        if (!in_single_quote && !in_double_quote && (c == ' ' || c == '\t')) {
+        if (c == '"') {
+            in_double_quote = true;
+            continue;
+        }
+        
+        if (c == ' ' || c == '\t') {
             if (!current.empty()) {
                 tokens.push_back(current);
                 current.clear();
