@@ -9,7 +9,11 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 
-// Tokenizer - supports quoting, escaping, concatenation
+#include <readline/readline.h>
+#include <readline/history.h>
+
+// ======================= Tokenizer (quotes + escapes) =======================
+
 std::vector<std::string> tokenize(const std::string& input) {
     std::vector<std::string> tokens;
     std::string current;
@@ -74,15 +78,61 @@ std::vector<std::string> tokenize(const std::string& input) {
     return tokens;
 }
 
+// ======================= Readline completion (echo/exit) ====================
+
+char* builtin_names[] = { (char*)"echo ", (char*)"exit ", nullptr };
+
+// generator for builtin completion matches
+char* builtin_generator(const char* text, int state) {
+    static int index;
+    if (!state) {
+        index = 0;
+    }
+
+    size_t len = std::strlen(text);
+
+    while (builtin_names[index]) {
+        const char* candidate = builtin_names[index];
+        index++;
+
+        // candidate includes trailing space; compare only prefix
+        if (std::strncmp(candidate, text, len) == 0) {
+            return ::strdup(candidate);
+        }
+    }
+    return nullptr;
+}
+
+// completion function hooked into readline
+char** builtin_completion(const char* text, int start, int end) {
+    // Only complete at start of line (command position)
+    if (start != 0) {
+        return nullptr;
+    }
+
+    rl_attempted_completion_over = 1; // don't do filename completion
+    return rl_completion_matches(text, builtin_generator);
+}
+
+// ================================ main ======================================
+
 int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
 
-    while (true) {
-        std::cout << "$ ";
+    // install completion function
+    rl_attempted_completion_function = builtin_completion;
 
-        std::string input;
-        if (!std::getline(std::cin, input)) break;
+    while (true) {
+        char* line = readline("$ ");
+        if (!line) break;  // EOF / Ctrl-D
+
+        std::string input(line);
+        free(line);
+
+        if (!input.empty()) {
+            add_history(input.c_str());
+        }
 
         std::vector<std::string> parts = tokenize(input);
         if (parts.empty()) continue;
@@ -94,7 +144,7 @@ int main() {
         std::string redirectOutFile;
         bool appendOut = false;
 
-        // Detect > 1> >> 1>>
+        // Detect >, 1>, >>, 1>>
         for (size_t i = 0; i < parts.size(); i++) {
             if (parts[i] == ">" || parts[i] == "1>") {
                 if (i + 1 < parts.size()) {
@@ -117,7 +167,7 @@ int main() {
         std::string redirectErrFile;
         bool appendErr = false;
 
-        // Detect 2> and 2>>
+        // Detect 2>, 2>>
         for (size_t i = 0; i < parts.size(); i++) {
             if (parts[i] == "2>") {
                 if (i + 1 < parts.size()) {
