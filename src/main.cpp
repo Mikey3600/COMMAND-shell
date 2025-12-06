@@ -7,11 +7,9 @@
 #include <cctype>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 
-// Tokenizer supporting:
-// - single quotes (all literal)
-// - double quotes (\" and \\ escape, others literal)
-// - backslash escaping outside quotes
+// Tokenizer supporting quotes and escaping rules
 std::vector<std::string> tokenize(const std::string& input) {
     std::vector<std::string> tokens;
     std::string current;
@@ -22,14 +20,12 @@ std::vector<std::string> tokenize(const std::string& input) {
     for (size_t i = 0; i < input.size(); i++) {
         char c = input[i];
 
-        // Handle escape outside quotes
         if (escape && !inDoubleQuote) {
             current.push_back(c);
             escape = false;
             continue;
         }
 
-        // Handle escape inside double quotes
         if (inDoubleQuote) {
             if (c == '\\') {
                 if (i + 1 < input.size()) {
@@ -45,25 +41,21 @@ std::vector<std::string> tokenize(const std::string& input) {
             }
         }
 
-        // Start escape (only outside quotes)
         if (c == '\\' && !inSingleQuote && !inDoubleQuote) {
             escape = true;
             continue;
         }
 
-        // Toggle single quote mode
         if (c == '\'' && !inDoubleQuote) {
             inSingleQuote = !inSingleQuote;
             continue;
         }
 
-        // Toggle double quote mode
         if (c == '"' && !inSingleQuote) {
             inDoubleQuote = !inDoubleQuote;
             continue;
         }
 
-        // Token split on whitespace outside quotes
         if (std::isspace(static_cast<unsigned char>(c)) && !inSingleQuote && !inDoubleQuote) {
             if (!current.empty()) {
                 tokens.push_back(current);
@@ -75,13 +67,8 @@ std::vector<std::string> tokenize(const std::string& input) {
         current.push_back(c);
     }
 
-    if (escape) {
-        current.push_back('\\');
-    }
-
-    if (!current.empty()) {
-        tokens.push_back(current);
-    }
+    if (escape) current.push_back('\\');
+    if (!current.empty()) tokens.push_back(current);
 
     return tokens;
 }
@@ -94,14 +81,10 @@ int main() {
         std::cout << "$ ";
 
         std::string input;
-        if (!std::getline(std::cin, input)) {
-            break;
-        }
+        if (!std::getline(std::cin, input)) break;
 
         // exit builtin
-        if (input == "exit") {
-            break;
-        }
+        if (input == "exit") break;
 
         // pwd builtin
         if (input == "pwd") {
@@ -152,9 +135,7 @@ int main() {
         if (input.rfind("type ", 0) == 0) {
             std::string target = input.substr(5);
 
-            if (target == "echo" || target == "exit" ||
-                target == "type" || target == "pwd" ||
-                target == "cd") {
+            if (target == "echo" || target == "exit" || target == "type" || target == "pwd" || target == "cd") {
                 std::cout << target << " is a shell builtin" << std::endl;
                 continue;
             }
@@ -168,10 +149,9 @@ int main() {
 
                 while (true) {
                     size_t end = path.find(':', start);
-                    std::string dir =
-                        (end == std::string::npos)
-                        ? path.substr(start)
-                        : path.substr(start, end - start);
+                    std::string dir = (end == std::string::npos) ?
+                        path.substr(start) :
+                        path.substr(start, end - start);
 
                     if (!dir.empty()) {
                         std::string fullPath = dir + "/" + target;
@@ -194,18 +174,33 @@ int main() {
             continue;
         }
 
-        // external execution
+        // ====== External command processing (with redirection) ======
+
         std::vector<std::string> parts = tokenize(input);
         if (parts.empty()) continue;
 
-        // -------- KEY CHANGE --------
-        // Because tokenizer already stripped quotes,
-        // quoted executable names simply work here.
+        int redirectFd = -1;
+        std::string redirectFile;
+
+        // detect > or 1>
+        for (size_t i = 0; i < parts.size(); i++) {
+            if (parts[i] == ">" || parts[i] == "1>") {
+                if (i + 1 < parts.size()) {
+                    redirectFile = parts[i + 1];
+                    parts.erase(parts.begin() + i, parts.begin() + i + 2);
+                }
+                break;
+            }
+        }
+
+        // build argv
         std::vector<char*> args;
         for (auto& s : parts) {
             args.push_back(strdup(s.c_str()));
         }
         args.push_back(nullptr);
+
+        if (!args[0]) continue; // no command
 
         char* cmd = args[0];
         char* pathEnv = getenv("PATH");
@@ -217,10 +212,9 @@ int main() {
 
             while (true) {
                 size_t end = path.find(':', start);
-                std::string dir =
-                    (end == std::string::npos)
-                    ? path.substr(start)
-                    : path.substr(start, end - start);
+                std::string dir = (end == std::string::npos) ?
+                    path.substr(start) :
+                    path.substr(start, end - start);
 
                 if (!dir.empty()) {
                     std::string fullPath = dir + "/" + cmd;
@@ -229,8 +223,18 @@ int main() {
                         pid_t pid = fork();
 
                         if (pid == 0) {
+                            // Child — apply redirection if needed
+                            if (!redirectFile.empty()) {
+                                int fd = open(redirectFile.c_str(),
+                                              O_CREAT | O_WRONLY | O_TRUNC,
+                                              0644);
+                                if (fd >= 0) {
+                                    dup2(fd, STDOUT_FILENO);
+                                    close(fd);
+                                }
+                            }
                             execv(fullPath.c_str(), args.data());
-                            exit(1);  // execv failed
+                            exit(1);
                         } else {
                             waitpid(pid, nullptr, 0);
                         }
@@ -256,6 +260,7 @@ int main() {
 
     return 0;
 }
+
 
 
 
