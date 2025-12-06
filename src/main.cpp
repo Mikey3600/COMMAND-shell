@@ -76,7 +76,6 @@ std::vector<std::string> tokenize(const std::string &input) {
 
 // ======================= Builtins list =======================
 
-// FIX: Removed Markdown formatting (**) and trailing comment from initializer list
 std::vector<std::string> builtin_list = {
     "echo", "exit", "pwd", "cd", "type", "history"
 };
@@ -298,14 +297,14 @@ void run_history_builtin() {
     HISTORY_STATE *state = history_get_history_state();
     if (!state) return;
 
-    // Use history_list() to get the list of history entries
+    // Get the list of history entries
     HIST_ENTRY **history = history_list();
 
     if (history) {
+        // history_base is the number of the first entry in the history list
         int line_number = history_base;
         for (HIST_ENTRY **h = history; *h; h++) {
-            // Output format: [Spaces] [Number] [Spaces] [Command]
-            // We use standard stream output for the required format: "    1  command"
+            // Output format: Four spaces, number, two spaces, command
             std::cout << "    " << line_number << "  " << (*h)->line << "\n";
             line_number++;
         }
@@ -363,6 +362,7 @@ void run_builtin_child(const std::vector<std::string> &parts) {
         _exit(0);
     }
     
+    // History handling for pipeline/child processes
     if (cmd == "history") {
         run_history_builtin();
         _exit(0); // Terminate the child process
@@ -536,9 +536,6 @@ int main() {
 
     rl_bind_key('\t', tab_handler);
     
-    // Ensure history is active for the current session
-    // This is handled by default with add_history, but can be configured here.
-
     while (true) {
         char *line = readline("$ ");
         if (!line) break;
@@ -546,6 +543,7 @@ int main() {
         std::string input(line);
         free(line);
 
+        // Add to history BEFORE parsing, ensuring commands are recorded
         if (!input.empty()) {
             add_history(input.c_str());
         }
@@ -798,7 +796,6 @@ int main() {
 
     return 0;
 }
-
 
 
 
