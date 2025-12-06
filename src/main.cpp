@@ -320,10 +320,16 @@ void run_history_builtin(const std::vector<std::string> &parts) {
         }
 
         if (option == "-a") {
-            // append_history appends new history entries (since last I/O operation) to the file.
-            // history_length tells readline to append only entries since the last I/O.
-            if (append_history(history_length, path.c_str()) != 0) {
-                std::cerr << "history: cannot append to " << path << std::endl;
+            // FIX: Append only the new entries since the last I/O operation (tracked by history_offset).
+            int entries_to_append = history_length - history_offset;
+            
+            if (entries_to_append > 0) {
+                if (append_history(entries_to_append, path.c_str()) == 0) {
+                    // Update the offset to the current total length upon successful append.
+                    history_offset = history_length;
+                } else {
+                    std::cerr << "history: cannot append to " << path << std::endl;
+                }
             }
             return;
         }
