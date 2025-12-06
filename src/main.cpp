@@ -3,8 +3,10 @@
 #include <cstdlib>
 #include <sstream>
 #include <vector>
-#include <unistd.h>     // fork(), execv(), access(), X_OK
-#include <sys/wait.h>   // waitpid()
+#include <cstring>     // ADD THIS ✔
+#include <unistd.h>    // fork(), execv(), access(), X_OK
+#include <sys/wait.h>  // waitpid()
+
 
 int main() {
     std::cout << std::unitbuf;
