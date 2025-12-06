@@ -17,17 +17,30 @@ int main() {
             break;
         }
 
-        // Check if the command starts with "echo "
+        // Handle echo command
         if (input.rfind("echo ", 0) == 0) {
-            // Extract everything after "echo "
             std::string text = input.substr(5);
             std::cout << text << std::endl;
-        } else {
+        }
+        // Handle type command
+        else if (input.rfind("type ", 0) == 0) {
+            std::string target = input.substr(5);
+
+            // Check known builtins
+            if (target == "echo" || target == "exit" || target == "type") {
+                std::cout << target << " is a shell builtin" << std::endl;
+            } else {
+                std::cout << target << ": not found" << std::endl;
+            }
+        }
+        // Default fallback
+        else {
             std::cout << input << ": command not found" << std::endl;
         }
     }
 
     return 0;
 }
+
 
 
