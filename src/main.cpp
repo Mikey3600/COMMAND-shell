@@ -14,8 +14,6 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
-// ======================= Tokenizer =======================
-
 std::vector<std::string> tokenize(const std::string &input) {
     std::vector<std::string> tokens;
     std::string cur;
@@ -73,8 +71,12 @@ std::vector<std::string> tokenize(const std::string &input) {
     return tokens;
 }
 
-// ======================= PATH executable scanning =======================
+// ========== Builtin list ==========
+std::vector<std::string> builtin_list = {
+    "echo", "exit", "type", "pwd", "cd"
+};
 
+// ======================= PATH scan =======================
 std::vector<std::string> find_path_matches(const std::string &prefix) {
     std::vector<std::string> matches;
 
@@ -86,7 +88,8 @@ std::vector<std::string> find_path_matches(const std::string &prefix) {
 
     while (true) {
         size_t end = path.find(':', start);
-        std::string dir = (end == std::string::npos) ? path.substr(start) : path.substr(start, end - start);
+        std::string dir = (end == std::string::npos) ? path.substr(start) :
+                                                     path.substr(start, end - start);
 
         if (!dir.empty()) {
             DIR *dp = opendir(dir.c_str());
@@ -96,7 +99,8 @@ std::vector<std::string> find_path_matches(const std::string &prefix) {
                     std::string name = e->d_name;
                     if (name.rfind(prefix, 0) == 0) {
                         std::string full = dir + "/" + name;
-                        if (access(full.c_str(), X_OK) == 0) matches.push_back(name);
+                        if (access(full.c_str(), X_OK) == 0)
+                            matches.push_back(name);
                     }
                 }
                 closedir(dp);
@@ -108,63 +112,98 @@ std::vector<std::string> find_path_matches(const std::string &prefix) {
     return matches;
 }
 
-// ======================= Auto-completion state =======================
-
+// ======================= TAB STATE =======================
 std::string last_prefix;
-int tab_press_count = 0;
+int tab_count = 0;
 
-// Custom TAB handler
+// ======================= TAB HANDLER =======================
 int tab_handler(int count, int key) {
     std::string prefix = rl_line_buffer;
 
-    auto matches = find_path_matches(prefix);
-    std::sort(matches.begin(), matches.end());
+    // 1) BUILTIN completion first
+    std::vector<std::string> builtin_matches;
+    for (auto &b : builtin_list)
+        if (b.rfind(prefix, 0) == 0)
+            builtin_matches.push_back(b);
 
-    // No match → bell only
-    if (matches.empty()) {
-        write(STDOUT_FILENO, "\a", 1);
-        return 0;
-    }
-
-    // One match → immediate completion
-    if (matches.size() == 1) {
-        rl_replace_line(matches[0].c_str(), 1);
-        rl_point = matches[0].size();
+    if (builtin_matches.size() == 1) {
+        rl_replace_line(builtin_matches[0].c_str(), 1);
+        rl_point = builtin_matches[0].size();
         rl_insert_text(" ");
         rl_redisplay();
         last_prefix.clear();
-        tab_press_count = 0;
+        tab_count = 0;
         return 0;
     }
 
-    // Multi-match behavior:
-    if (prefix != last_prefix) {
+    // 2) PATH completions
+    auto matches = find_path_matches(prefix);
+    std::sort(matches.begin(), matches.end());
+
+    // handle mixed case: multiple builtins?
+    if (builtin_matches.size() > 1) {
+        if (prefix != last_prefix) tab_count = 0;
         last_prefix = prefix;
-        tab_press_count = 0;
-    }
-    tab_press_count++;
+        tab_count++;
 
-    if (tab_press_count == 1) {
-        write(STDOUT_FILENO, "\a", 1);
+        if (tab_count == 1) {
+            write(STDOUT_FILENO, "\a", 1);
+            return 0;
+        }
+
+        std::cout << "\n";
+        for (size_t i = 0; i < builtin_matches.size(); i++) {
+            std::cout << builtin_matches[i];
+            if (i + 1 < builtin_matches.size()) std::cout << "  ";
+        }
+        std::cout << "\n$ " << prefix;
+        fflush(stdout);
+
+        rl_replace_line(prefix.c_str(), 1);
+        rl_point = prefix.size();
+        rl_redisplay();
         return 0;
     }
 
-    std::cout << "\n";
-    for (size_t i = 0; i < matches.size(); i++) {
-        std::cout << matches[i];
-        if (i + 1 < matches.size()) std::cout << "  ";
-    }
-    std::cout << "\n$ " << prefix;
-    fflush(stdout);
+    // Now PATH completion
+    if (!matches.empty()) {
+        if (matches.size() == 1) {
+            rl_replace_line(matches[0].c_str(), 1);
+            rl_point = matches[0].size();
+            rl_insert_text(" ");
+            rl_redisplay();
+            last_prefix.clear();
+            tab_count = 0;
+            return 0;
+        }
+        if (prefix != last_prefix) tab_count = 0;
+        last_prefix = prefix;
+        tab_count++;
 
-    rl_replace_line(prefix.c_str(), 1);
-    rl_point = prefix.size();
-    rl_redisplay();
+        if (tab_count == 1) {
+            write(STDOUT_FILENO, "\a", 1);
+            return 0;
+        }
+
+        std::cout << "\n";
+        for (size_t i = 0; i < matches.size(); i++) {
+            std::cout << matches[i];
+            if (i + 1 < matches.size()) std::cout << "  ";
+        }
+        std::cout << "\n$ " << prefix;
+        fflush(stdout);
+
+        rl_replace_line(prefix.c_str(), 1);
+        rl_point = prefix.size();
+        rl_redisplay();
+        return 0;
+    }
+
+    write(STDOUT_FILENO, "\a", 1);
     return 0;
 }
 
-// ======================= MAIN SHELL =======================
-
+// ======================= SHELL CORE =======================
 int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
@@ -182,32 +221,28 @@ int main() {
         auto parts = tokenize(input);
         if (parts.empty()) continue;
 
-        // ======================= exit =======================
-        if (parts.size() == 1 && parts[0] == "exit") break;
+        if (parts[0] == "exit") break;
 
-        // ======================= pwd =======================
-        if (parts.size() == 1 && parts[0] == "pwd") {
+        if (parts[0] == "pwd") {
             char buf[4096];
-            if (getcwd(buf, sizeof(buf))) std::cout << buf << std::endl;
+            if (getcwd(buf, sizeof(buf)))
+                std::cout << buf << std::endl;
             continue;
         }
 
-        // ======================= cd =======================
         if (parts[0] == "cd") {
             if (parts.size() > 1) {
                 std::string path = parts[1];
                 if (path == "~") {
                     const char *home = getenv("HOME");
                     if (home && chdir(home) != 0)
-                        std::cerr << "cd: " << home << ": No such file or directory" << std::endl;
-                } else if (chdir(path.c_str()) != 0) {
-                    std::cerr << "cd: " << path << ": No such file or directory" << std::endl;
-                }
+                        std::cerr << "cd: " << home << ": No such file or directory\n";
+                } else if (chdir(path.c_str()) != 0)
+                    std::cerr << "cd: " << path << ": No such file or directory\n";
             }
             continue;
         }
 
-        // ======================= echo =======================
         if (parts[0] == "echo") {
             for (size_t i = 1; i < parts.size(); i++) {
                 std::cout << parts[i];
@@ -217,29 +252,7 @@ int main() {
             continue;
         }
 
-        // ======================= type builtin =======================
-        if (parts[0] == "type") {
-            if (parts.size() > 1) {
-                std::string target = parts[1];
-                if (target == "echo" || target == "exit" || target == "type"
-                    || target == "pwd" || target == "cd") {
-                    std::cout << target << " is a shell builtin\n";
-                } else {
-                    bool found = false;
-                    auto all = find_path_matches(target);
-                    for (auto &x : all) {
-                        if (x == target) {
-                            std::cout << target << " is /usr/bin/" << target << "\n";
-                            found = true;
-                        }
-                    }
-                    if (!found) std::cerr << target << ": not found\n";
-                }
-            }
-            continue;
-        }
-
-        // ======================= external run =======================
+        // external execution
         {
             std::vector<char *> args;
             for (auto &s : parts) args.push_back(strdup(s.c_str()));
@@ -252,6 +265,7 @@ int main() {
             if (pathEnv) {
                 std::string path(pathEnv);
                 size_t start = 0;
+
                 while (true) {
                     size_t end = path.find(':', start);
                     std::string dir = (end == std::string::npos) ? path.substr(start) : path.substr(start, end - start);
@@ -260,12 +274,8 @@ int main() {
                         std::string full = dir + "/" + cmd;
                         if (access(full.c_str(), X_OK) == 0) {
                             pid_t pid = fork();
-                            if (pid == 0) {
-                                execv(full.c_str(), args.data());
-                                exit(1);
-                            } else {
-                                waitpid(pid, nullptr, 0);
-                            }
+                            if (pid == 0) execv(full.c_str(), args.data());
+                            else waitpid(pid, nullptr, 0);
                             executed = true;
                             break;
                         }
@@ -281,6 +291,7 @@ int main() {
     }
     return 0;
 }
+
 
 
 
