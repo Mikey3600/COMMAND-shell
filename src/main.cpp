@@ -33,14 +33,25 @@ int main() {
             continue;
         }
 
-        // cd builtin (absolute + relative paths)
+        // cd builtin (absolute, relative, ~)
         if (input.rfind("cd ", 0) == 0) {
             std::string path = input.substr(3);
 
-            // Ignore empty cd
-            if (!path.empty()) {
+            // Handle '~' expansion
+            if (path == "~") {
+                const char* home = std::getenv("HOME");
+                if (home != nullptr) {
+                    if (chdir(home) != 0) {
+                        std::cout << "cd: " << home << ": No such file or directory" << std::endl;
+                    }
+                } else {
+                    std::cout << "cd: HOME not set" << std::endl;
+                }
+                continue;
+            }
 
-                // Attempt change directory
+            // Handle any other path (absolute or relative)
+            if (!path.empty()) {
                 if (chdir(path.c_str()) != 0) {
                     std::cout << "cd: " << path << ": No such file or directory" << std::endl;
                 }
@@ -159,5 +170,6 @@ int main() {
 
     return 0;
 }
+
 
 
