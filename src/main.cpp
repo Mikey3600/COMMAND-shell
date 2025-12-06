@@ -233,13 +233,11 @@ int execute_builtin(const vector<string>& args) {
                 return 1;
             }
             
-            string to_write;
             for (size_t i = last_history_flush_index; i < shell_history.size(); i++) {
-                to_write += shell_history[i] + "\n";
+                string line = shell_history[i] + "\n";
+                write(fd, line.c_str(), line.size());
             }
-            to_write += "\n";
             
-            write(fd, to_write.c_str(), to_write.size());
             close(fd);
             last_history_flush_index = shell_history.size();
             return 0;
