@@ -568,8 +568,7 @@ int main() {
     rl_bind_key('\t', tab_handler);
     
     while (true) {
-        // readline() automatically enables history navigation (up/down arrow) 
-        // and line editing once add_history() is used.
+        // readline() handles history navigation and returns the line when ENTER is pressed.
         char *line = readline("$ "); 
         if (!line) break;
 
