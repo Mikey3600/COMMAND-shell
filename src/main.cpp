@@ -304,7 +304,7 @@ void run_history_builtin(const std::vector<std::string> &parts) {
         const std::string& path = parts[2];
 
         if (option == "-r") {
-            // read_history_range appends history from the file.
+            // read_history_range appends history from the file to memory.
             if (read_history_range(path.c_str(), -1, -1) != 0) {
                 std::cerr << "history: cannot read " << path << std::endl;
             }
@@ -312,7 +312,7 @@ void run_history_builtin(const std::vector<std::string> &parts) {
         }
         
         if (option == "-w") {
-            // write_history writes all in-memory history to the file, creating it if necessary.
+            // write_history writes all in-memory history to the file, truncating/creating it.
             if (write_history(path.c_str()) != 0) {
                 std::cerr << "history: cannot write " << path << std::endl;
             }
@@ -321,8 +321,7 @@ void run_history_builtin(const std::vector<std::string> &parts) {
 
         if (option == "-a") {
             // append_history appends new history entries (since last I/O operation) to the file.
-            // history_length is the total number of entries. Passing this value as the argument 
-            // tells readline to append only entries since the last history file I/O operation.
+            // history_length tells readline to append only entries since the last I/O.
             if (append_history(history_length, path.c_str()) != 0) {
                 std::cerr << "history: cannot append to " << path << std::endl;
             }
@@ -335,9 +334,10 @@ void run_history_builtin(const std::vector<std::string> &parts) {
     int limit = 0;
     if (parts.size() == 2) {
         try {
+            // Attempt to parse a numeric limit argument
             limit = std::stoi(parts[1]);
         } catch (const std::exception& e) {
-            // Invalid number format or incorrect option structure
+            // Invalid number format
             std::cerr << "history: invalid option or numeric argument required" << std::endl;
             return;
         }
@@ -426,8 +426,7 @@ void run_builtin_child(const std::vector<std::string> &parts) {
     
     // History handling for pipeline/child processes
     if (cmd == "history") {
-        // History file operations are suppressed in child processes as they affect the parent's state.
-        // Only run the listing part if piped.
+        // Only run the listing part if piped. File operations are parent-shell logic.
         if (parts.size() == 1 || (parts.size() == 2 && parts[1] != "-r" && parts[1] != "-w" && parts[1] != "-a")) {
             run_history_builtin(parts); 
         }
@@ -482,6 +481,7 @@ void run_single_external(const std::vector<std::string> &parts) {
         std::cerr << cmd << ": command not found" << std::endl;
     }
 
+    // Clean up allocated strings
     for (char *p : argv) if (p) free(p);
 }
 
@@ -490,39 +490,35 @@ void run_single_external(const std::vector<std::string> &parts) {
 void run_pipeline_multi(const std::vector<std::vector<std::string>> &commands) {
     size_t n = commands.size();
     if (n == 0) return;
+    
+    // Special handling for a single command in the pipeline logic (just run as child)
     if (n == 1) {
-        // Just run single command normally, but as child
         std::vector<char*> argv;
         for (auto &s : commands[0]) argv.push_back(strdup(s.c_str()));
         argv.push_back(nullptr);
 
-        if (is_builtin(commands[0][0])) {
-            pid_t pid = fork();
-            if (pid == 0) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            if (is_builtin(commands[0][0])) {
                 run_builtin_child(commands[0]);
             } else {
-                waitpid(pid, nullptr, 0);
+                std::string fullPath;
+                if (!find_executable_in_path(commands[0][0], fullPath)) {
+                    std::cerr << commands[0][0] << ": command not found" << std::endl;
+                    _exit(1);
+                }
+                execv(fullPath.c_str(), argv.data());
+                _exit(1);
             }
         } else {
-            std::string fullPath;
-            if (!find_executable_in_path(commands[0][0], fullPath)) {
-                std::cerr << commands[0][0] << ": command not found" << std::endl;
-            } else {
-                pid_t pid = fork();
-                if (pid == 0) {
-                    execv(fullPath.c_str(), argv.data());
-                    std::exit(1);
-                } else {
-                    waitpid(pid, nullptr, 0);
-                }
-            }
+            waitpid(pid, nullptr, 0);
         }
 
         for (char *p : argv) if (p) free(p);
         return;
     }
 
-    // Create pipes: one between each pair of commands
+    // Create pipes: one between each pair of commands (2*(N-1) file descriptors)
     std::vector<int> pipes(2 * (n - 1));
     for (size_t i = 0; i < n - 1; ++i) {
         if (pipe(&pipes[2 * i]) == -1) {
@@ -537,23 +533,24 @@ void run_pipeline_multi(const std::vector<std::vector<std::string>> &commands) {
         pid_t pid = fork();
         if (pid == 0) {
             // Child i
-            // If not the first command, hook stdin to previous pipe read end
+            
+            // Connect stdin if not the first command
             if (i > 0) {
                 int in_fd = pipes[2 * (i - 1)];
                 dup2(in_fd, STDIN_FILENO);
             }
-            // If not the last command, hook stdout to next pipe write end
+            // Connect stdout if not the last command
             if (i < n - 1) {
                 int out_fd = pipes[2 * i + 1];
                 dup2(out_fd, STDOUT_FILENO);
             }
 
-            // Close all pipe fds
+            // Close all pipe fds in the child
             for (size_t k = 0; k < 2 * (n - 1); ++k) {
                 close(pipes[k]);
             }
 
-            // Now run builtin or external
+            // Run command
             const auto &parts = commands[i];
 
             if (is_builtin(parts[0])) {
@@ -577,11 +574,11 @@ void run_pipeline_multi(const std::vector<std::vector<std::string>> &commands) {
             pids[i] = pid;
         } else {
             perror("fork");
-            // Parent on fork failure: continue anyway
+            return;
         }
     }
 
-    // Parent: close all pipe ends
+    // Parent: Close all pipe ends
     for (size_t k = 0; k < 2 * (n - 1); ++k) {
         close(pipes[k]);
     }
@@ -609,7 +606,7 @@ int main() {
         std::string input(line);
         free(line);
 
-        // Add to history BEFORE parsing, ensuring commands are recorded
+        // Add to history BEFORE parsing/execution, ensuring history is complete
         if (!input.empty()) {
             add_history(input.c_str());
         }
@@ -623,6 +620,7 @@ int main() {
         bool appendOut = false;
         bool appendErr = false;
 
+        // Extract redirection arguments and remove them from the 'parts' vector
         for (size_t i = 0; i < parts.size();) {
             const std::string &tok = parts[i];
 
@@ -656,13 +654,11 @@ int main() {
         int savedStdout = -1;
         int savedStderr = -1;
 
+        // Apply redirection
         if (!redirectOutFile.empty()) {
             savedStdout = dup(STDOUT_FILENO);
             int flags = O_CREAT | O_WRONLY;
-            if (appendOut)
-                flags |= O_APPEND;
-            else
-                flags |= O_TRUNC;
+            flags |= appendOut ? O_APPEND : O_TRUNC;
 
             int fd = open(redirectOutFile.c_str(), flags, 0644);
             if (fd >= 0) {
@@ -674,10 +670,7 @@ int main() {
         if (!redirectErrFile.empty()) {
             savedStderr = dup(STDERR_FILENO);
             int flags = O_CREAT | O_WRONLY;
-            if (appendErr)
-                flags |= O_APPEND;
-            else
-                flags |= O_TRUNC;
+            flags |= appendErr ? O_APPEND : O_TRUNC;
 
             int fd = open(redirectErrFile.c_str(), flags, 0644);
             if (fd >= 0) {
@@ -686,7 +679,7 @@ int main() {
             }
         }
 
-        // ======================= PIPELINE DETECTION (multi-stage) =======================
+        // ======================= PIPELINE DETECTION =======================
 
         bool hasPipe = false;
         for (auto &t : parts) {
@@ -717,139 +710,85 @@ int main() {
             if (!commands.empty()) {
                 run_pipeline_multi(commands);
             }
-
-            if (savedStdout != -1) {
-                dup2(savedStdout, STDOUT_FILENO);
-                close(savedStdout);
-            }
-            if (savedStderr != -1) {
-                dup2(savedStderr, STDERR_FILENO);
-                close(savedStderr);
-            }
-            continue;
         }
 
         // ======================= BUILTINS (no pipeline) =======================
+        else if (is_builtin(parts[0])) {
+            const std::string& cmd = parts[0];
 
-        if (parts.size() == 1 && parts[0] == "exit") {
-            if (savedStdout != -1) {
-                dup2(savedStdout, STDOUT_FILENO);
-                close(savedStdout);
+            if (cmd == "exit") {
+                if (savedStdout != -1) {
+                    dup2(savedStdout, STDOUT_FILENO);
+                    close(savedStdout);
+                }
+                if (savedStderr != -1) {
+                    dup2(savedStderr, STDERR_FILENO);
+                    close(savedStderr);
+                }
+                break;
             }
-            if (savedStderr != -1) {
-                dup2(savedStderr, STDERR_FILENO);
-                close(savedStderr);
-            }
-            break;
-        }
 
-        if (parts.size() == 1 && parts[0] == "pwd") {
-            char buf[4096];
-            if (getcwd(buf, sizeof(buf))) {
-                std::cout << buf << std::endl;
+            if (cmd == "pwd") {
+                char buf[4096];
+                if (getcwd(buf, sizeof(buf))) {
+                    std::cout << buf << std::endl;
+                }
             }
-            if (savedStdout != -1) {
-                dup2(savedStdout, STDOUT_FILENO);
-                close(savedStdout);
-            }
-            if (savedStderr != -1) {
-                dup2(savedStderr, STDERR_FILENO);
-                close(savedStderr);
-            }
-            continue;
-        }
 
-        if (parts[0] == "cd") {
-            if (parts.size() > 1) {
-                std::string path = parts[1];
-                if (path == "~") {
-                    const char *home = std::getenv("HOME");
-                    if (home) {
-                        if (chdir(home) != 0) {
-                            std::cerr << "cd: " << home << ": No such file or directory" << std::endl;
+            if (cmd == "cd") {
+                if (parts.size() > 1) {
+                    std::string path = parts[1];
+                    if (path == "~") {
+                        const char *home = std::getenv("HOME");
+                        path = home ? home : "";
+                    }
+
+                    if (!path.empty()) {
+                        if (chdir(path.c_str()) != 0) {
+                            std::cerr << "cd: " << parts[1] << ": No such file or directory" << std::endl;
                         }
-                    } else {
+                    } else if (path == "~" && !std::getenv("HOME")) {
                         std::cerr << "cd: HOME not set" << std::endl;
                     }
-                } else {
-                    if (chdir(path.c_str()) != 0) {
-                        std::cerr << "cd: " << path << ": No such file or directory" << std::endl;
-                    }
                 }
             }
-            if (savedStdout != -1) {
-                dup2(savedStdout, STDOUT_FILENO);
-                close(savedStdout);
-            }
-            if (savedStderr != -1) {
-                dup2(savedStderr, STDERR_FILENO);
-                close(savedStderr);
-            }
-            continue;
-        }
 
-        if (parts[0] == "echo") {
-            for (size_t i = 1; i < parts.size(); i++) {
-                std::cout << parts[i];
-                if (i + 1 < parts.size()) std::cout << " ";
+            if (cmd == "echo") {
+                for (size_t i = 1; i < parts.size(); i++) {
+                    std::cout << parts[i];
+                    if (i + 1 < parts.size()) std::cout << " ";
+                }
+                std::cout << std::endl;
             }
-            std::cout << std::endl;
-            if (savedStdout != -1) {
-                dup2(savedStdout, STDOUT_FILENO);
-                close(savedStdout);
+            
+            if (cmd == "history") {
+                run_history_builtin(parts);
             }
-            if (savedStderr != -1) {
-                dup2(savedStderr, STDERR_FILENO);
-                close(savedStderr);
-            }
-            continue;
-        }
-        
-        // Handle history as a non-pipelined builtin (now handles -r, -w, and -a)
-        if (parts[0] == "history") {
-            run_history_builtin(parts);
 
-            if (savedStdout != -1) {
-                dup2(savedStdout, STDOUT_FILENO);
-                close(savedStdout);
-            }
-            if (savedStderr != -1) {
-                dup2(savedStderr, STDERR_FILENO);
-                close(savedStderr);
-            }
-            continue;
-        }
+            if (cmd == "type") {
+                if (parts.size() > 1) {
+                    std::string target = parts[1];
 
-
-        if (parts[0] == "type") {
-            if (parts.size() > 1) {
-                std::string target = parts[1];
-
-                if (is_builtin(target)) {
-                    std::cout << target << " is a shell builtin" << std::endl;
-                } else {
-                    std::string full;
-                    if (find_executable_in_path(target, full)) {
-                        std::cout << target << " is " << full << std::endl;
+                    if (is_builtin(target)) {
+                        std::cout << target << " is a shell builtin" << std::endl;
                     } else {
-                        std::cerr << target << ": not found" << std::endl;
+                        std::string full;
+                        if (find_executable_in_path(target, full)) {
+                            std::cout << target << " is " << full << std::endl;
+                        } else {
+                            std::cerr << target << ": not found" << std::endl;
+                        }
                     }
                 }
             }
-            if (savedStdout != -1) {
-                dup2(savedStdout, STDOUT_FILENO);
-                close(savedStdout);
-            }
-            if (savedStderr != -1) {
-                dup2(savedStderr, STDERR_FILENO);
-                close(savedStderr);
-            }
-            continue;
         }
 
-        // ======================= EXTERNAL (no pipe, no builtin) =======================
+        // ======================= EXTERNAL (no pipe) =======================
+        else {
+            run_single_external(parts);
+        }
 
-        run_single_external(parts);
+        // ======================= RESTORE STDOUT/STDERR =======================
 
         if (savedStdout != -1) {
             dup2(savedStdout, STDOUT_FILENO);
