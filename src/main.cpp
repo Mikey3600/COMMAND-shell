@@ -9,31 +9,30 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <algorithm>
 
 #include <readline/readline.h>
 #include <readline/history.h>
 
-// ======================= Tokenizer =======================
+// ====== Tokenizer (handles quotes & escapes) ======
 
 std::vector<std::string> tokenize(const std::string& input) {
     std::vector<std::string> tokens;
     std::string current;
-    bool inSingleQuote = false;
-    bool inDoubleQuote = false;
-    bool escape = false;
+    bool inSingleQuote=false, inDoubleQuote=false, escape=false;
 
-    for (size_t i = 0; i < input.size(); i++) {
-        char c = input[i];
+    for(size_t i=0;i<input.size();i++) {
+        char c=input[i];
 
         if (escape && !inDoubleQuote) {
             current.push_back(c);
-            escape = false;
+            escape=false;
             continue;
         }
 
-        if (inDoubleQuote && c == '\\') {
-            if (i + 1 < input.size() && (input[i + 1] == '"' || input[i + 1] == '\\')) {
-                current.push_back(input[i + 1]);
+        if (inDoubleQuote && c=='\\') {
+            if (i+1<input.size() && (input[i+1]=='"'||input[i+1]=='\\')) {
+                current.push_back(input[i+1]);
                 i++;
                 continue;
             }
@@ -41,26 +40,16 @@ std::vector<std::string> tokenize(const std::string& input) {
             continue;
         }
 
-        if (c == '\\' && !inSingleQuote && !inDoubleQuote) {
-            escape = true;
+        if (c=='\\' && !inSingleQuote && !inDoubleQuote) {
+            escape=true;
             continue;
         }
 
-        if (c == '\'' && !inDoubleQuote) {
-            inSingleQuote = !inSingleQuote;
-            continue;
-        }
-
-        if (c == '"' && !inSingleQuote) {
-            inDoubleQuote = !inDoubleQuote;
-            continue;
-        }
+        if (c=='\'' && !inDoubleQuote) { inSingleQuote=!inSingleQuote; continue; }
+        if (c=='"' && !inSingleQuote)  { inDoubleQuote=!inDoubleQuote; continue; }
 
         if (std::isspace((unsigned char)c) && !inSingleQuote && !inDoubleQuote) {
-            if (!current.empty()) {
-                tokens.push_back(current);
-                current.clear();
-            }
+            if (!current.empty()) { tokens.push_back(current); current.clear(); }
             continue;
         }
 
@@ -72,268 +61,276 @@ std::vector<std::string> tokenize(const std::string& input) {
     return tokens;
 }
 
-// ======================= TAB completion =======================
+// ====== Search PATH for matching executables ======
 
-std::vector<std::string> builtin_list = {"echo", "exit", "pwd", "cd", "type"};
-
-// scan PATH for executables
-std::vector<std::string> find_path_matches(const char* text) {
+std::vector<std::string> find_path_matches(const std::string& prefix) {
     std::vector<std::string> matches;
-    char* pathEnv = getenv("PATH");
+    char* pathEnv=getenv("PATH");
     if (!pathEnv) return matches;
 
     std::string path(pathEnv);
-    size_t start = 0;
+    size_t start=0;
 
-    while (true) {
-        size_t end = path.find(':', start);
-        std::string dir = (end == std::string::npos) ? path.substr(start)
-                                                     : path.substr(start, end - start);
-        start = (end == std::string::npos) ? std::string::npos : end + 1;
+    while(true){
+        size_t end=path.find(':',start);
+        std::string dir=(end==std::string::npos)?path.substr(start)
+                                                :path.substr(start,end-start);
+        start=(end==std::string::npos)?std::string::npos:end+1;
 
         if (!dir.empty()) {
-            DIR* dp = opendir(dir.c_str());
-            if (dp) {
-                struct dirent* entry;
-                while ((entry = readdir(dp))) {
-                    if (strncmp(entry->d_name, text, strlen(text)) == 0) {
-                        std::string full = dir + "/" + entry->d_name;
-                        if (access(full.c_str(), X_OK) == 0) {
-                            matches.push_back(entry->d_name);
-                        }
+            DIR* dp=opendir(dir.c_str());
+            if (dp){
+                struct dirent* ent;
+                while((ent=readdir(dp))){
+                    if (strncmp(ent->d_name, prefix.c_str(), prefix.size())==0) {
+                        std::string full=dir+"/"+ent->d_name;
+                        if(access(full.c_str(),X_OK)==0)
+                            matches.push_back(ent->d_name);
                     }
                 }
                 closedir(dp);
             }
         }
-
-        if (end == std::string::npos) break;
+        if (end==std::string::npos) break;
     }
     return matches;
 }
 
-// generator for readline
-char* completion_generator(const char* text, int state) {
-    static std::vector<std::string> candidates;
-    static int index;
+// ====== TAB Logic State ======
+static std::string last_prefix;
+static int tab_press_count = 0;
 
-    if (!state) {
-        candidates.clear();
-        index = 0;
+// ====== Custom key handler ======
 
-        for (auto& b : builtin_list)
-            if (b.rfind(text, 0) == 0) candidates.push_back(b);
+int tab_completion_handler(int count, int key) {
+    char* buf = rl_line_buffer;
+    std::string input(buf);
 
-        auto ext = find_path_matches(text);
-        candidates.insert(candidates.end(), ext.begin(), ext.end());
+    std::string prefix=input;
+    if(prefix!=last_prefix) {
+        tab_press_count=0;
+        last_prefix=prefix;
     }
 
-    if (index < candidates.size())
-        return strdup(candidates[index++].c_str());
+    tab_press_count++;
 
-    return nullptr;
+    std::vector<std::string> matches=find_path_matches(prefix);
+    std::sort(matches.begin(), matches.end());
+
+    if(matches.empty()) {
+        rl_insert_text("\x07");
+        return 0;
+    }
+
+    if(tab_press_count==1) {
+        rl_insert_text("\x07");
+        return 0;
+    }
+
+    std::cout<<std::endl;
+    for(size_t i=0;i<matches.size();i++){
+        std::cout<<matches[i];
+        if(i+1<matches.size()) std::cout<<"  ";
+    }
+    std::cout<<std::endl;
+
+    rl_replace_line(prefix.c_str(),1);
+    rl_point = prefix.size();
+    rl_redisplay();
+
+    return 0;
 }
 
-char** completion_wrapper(const char* text, int start, int end) {
-    if (start != 0) return nullptr;
-    rl_attempted_completion_over = 1;
-    return rl_completion_matches(text, completion_generator);
+// ====== Bind TAB ======
+
+void setup_tab() {
+    rl_bind_key('\t', tab_completion_handler);
 }
 
-// ======================= Shell =======================
+// ====== MAIN SHELL ======
 
-int main() {
-    std::cout << std::unitbuf;
-    std::cerr << std::unitbuf;
+int main(){
+    std::cout<<std::unitbuf;
+    std::cerr<<std::unitbuf;
 
-    rl_attempted_completion_function = completion_wrapper;
+    setup_tab();
 
-    while (true) {
-        char* line = readline("$ ");
-        if (!line) break;
+    while(true){
+        char* line=readline("$ ");
+        if(!line) break;
 
         std::string input(line);
         free(line);
 
-        if (!input.empty()) add_history(input.c_str());
+        if(!input.empty()) add_history(input.c_str());
 
-        std::vector<std::string> parts = tokenize(input);
-        if (parts.empty()) continue;
+        std::vector<std::string> parts=tokenize(input);
+        if(parts.empty()) continue;
 
         std::string redirectOutFile, redirectErrFile;
-        bool appendOut = false, appendErr = false;
+        bool appendOut=false, appendErr=false;
 
-        for (size_t i = 0; i < parts.size(); i++) {
-            if (parts[i] == ">" || parts[i] == "1>") {
-                redirectOutFile = parts[i + 1];
-                appendOut = false;
-                parts.erase(parts.begin()+i, parts.begin()+i+2);
+        for(size_t i=0;i<parts.size();i++){
+            if(parts[i]==">"||parts[i]=="1>"){
+                redirectOutFile=parts[i+1];
+                appendOut=false;
+                parts.erase(parts.begin()+i,parts.begin()+i+2);
                 break;
             }
-            if (parts[i] == ">>" || parts[i] == "1>>") {
-                redirectOutFile = parts[i + 1];
-                appendOut = true;
-                parts.erase(parts.begin()+i, parts.begin()+i+2);
-                break;
-            }
-        }
-
-        for (size_t i = 0; i < parts.size(); i++) {
-            if (parts[i] == "2>") {
-                redirectErrFile = parts[i + 1];
-                appendErr = false;
-                parts.erase(parts.begin()+i, parts.begin()+i+2);
-                break;
-            }
-            if (parts[i] == "2>>") {
-                redirectErrFile = parts[i + 1];
-                appendErr = true;
-                parts.erase(parts.begin()+i, parts.begin()+i+2);
+            if(parts[i]==">>"||parts[i]=="1>>"){
+                redirectOutFile=parts[i+1];
+                appendOut=true;
+                parts.erase(parts.begin()+i,parts.begin()+i+2);
                 break;
             }
         }
 
-        int savedStdout = -1, savedStderr = -1;
-
-        if (!redirectOutFile.empty()) {
-            savedStdout = dup(STDOUT_FILENO);
-            int flags = O_CREAT | O_WRONLY | (appendOut ? O_APPEND : O_TRUNC);
-            int fd = open(redirectOutFile.c_str(), flags, 0644);
-            if (fd >= 0) { dup2(fd, STDOUT_FILENO); close(fd); }
+        for(size_t i=0;i<parts.size();i++){
+            if(parts[i]=="2>"){
+                redirectErrFile=parts[i+1];
+                appendErr=false;
+                parts.erase(parts.begin()+i,parts.begin()+i+2);
+                break;
+            }
+            if(parts[i]=="2>>"){
+                redirectErrFile=parts[i+1];
+                appendErr=true;
+                parts.erase(parts.begin()+i,parts.begin()+i+2);
+                break;
+            }
         }
 
-        if (!redirectErrFile.empty()) {
-            savedStderr = dup(STDERR_FILENO);
-            int flags = O_CREAT | O_WRONLY | (appendErr ? O_APPEND : O_TRUNC);
-            int fd = open(redirectErrFile.c_str(), flags, 0644);
-            if (fd >= 0) { dup2(fd, STDERR_FILENO); close(fd); }
+        int savedStdout=-1, savedStderr=-1;
+
+        if(!redirectOutFile.empty()){
+            savedStdout=dup(STDOUT_FILENO);
+            int flags=O_CREAT|O_WRONLY|(appendOut?O_APPEND:O_TRUNC);
+            int fd=open(redirectOutFile.c_str(),flags,0644);
+            if(fd>=0){dup2(fd,STDOUT_FILENO);close(fd);}
         }
 
-        // =================== BUILTINS ====================
+        if(!redirectErrFile.empty()){
+            savedStderr=dup(STDERR_FILENO);
+            int flags=O_CREAT|O_WRONLY|(appendErr?O_APPEND:O_TRUNC);
+            int fd=open(redirectErrFile.c_str(),flags,0644);
+            if(fd>=0){dup2(fd,STDERR_FILENO);close(fd);}
+        }
 
-        if (parts.size()==1 && parts[0]=="exit") goto exit_now;
+        if(parts.size()==1 && parts[0]=="exit") goto restore_exit;
 
-        if (parts.size()==1 && parts[0]=="pwd") {
+        if(parts.size()==1 && parts[0]=="pwd"){
             char buf[4096];
-            if (getcwd(buf,sizeof(buf))) std::cout<<buf<<std::endl;
+            if(getcwd(buf,sizeof(buf))) std::cout<<buf<<std::endl;
             goto restore;
         }
 
-        if (parts[0]=="cd") {
-            if (parts.size() > 1) {
-                std::string path = parts[1];
-                if (path == "~") {
-                    const char* home = getenv("HOME");
-                    if (home != nullptr) {
-                        if (chdir(home) != 0)
-                            std::cerr << "cd: " << home << ": No such file or directory" << std::endl;
-                    } else {
-                        std::cerr << "cd: HOME not set" << std::endl;
-                    }
+        if(parts[0]=="cd"){
+            if(parts.size()>1){
+                std::string path=parts[1];
+                if(path=="~"){
+                    const char* home=getenv("HOME");
+                    if(home && chdir(home)!=0)
+                        std::cerr<<"cd: "<<home<<": No such file or directory"<<std::endl;
                 } else {
-                    if (chdir(path.c_str()) != 0) {
-                        std::cerr << "cd: " << path << ": No such file or directory" << std::endl;
-                    }
+                    if(chdir(path.c_str())!=0)
+                        std::cerr<<"cd: "<<path<<": No such file or directory"<<std::endl;
                 }
             }
             goto restore;
         }
 
-        if (parts[0]=="echo") {
-            for (size_t i=1;i<parts.size();i++) {
+        if(parts[0]=="echo"){
+            for(size_t i=1;i<parts.size();i++){
                 std::cout<<parts[i];
-                if (i+1<parts.size()) std::cout<<" ";
+                if(i+1<parts.size()) std::cout<<" ";
             }
             std::cout<<std::endl;
             goto restore;
         }
 
-        if (parts[0]=="type") {
-            if (parts.size() > 1) {
-                std::string target = parts[1];
-                if (target=="echo"||target=="exit"||target=="cd"||target=="pwd"||target=="type")
-                    std::cout<<target<<" is a shell builtin"<<std::endl;
-                else {
-                    char* pathEnv = getenv("PATH");
+        if(parts[0]=="type"){
+            if(parts.size()>1){
+                std::string t=parts[1];
+                if(t=="echo"||t=="exit"||t=="cd"||t=="pwd"||t=="type")
+                    std::cout<<t<<" is a shell builtin"<<std::endl;
+                else{
+                    char* pathEnv=getenv("PATH");
                     bool found=false;
-                    if (pathEnv) {
+                    if(pathEnv){
                         std::string path(pathEnv);
                         size_t start=0;
-                        while (true) {
+                        while(true){
                             size_t end=path.find(':',start);
                             std::string dir=(end==std::string::npos)?path.substr(start)
                                                                     :path.substr(start,end-start);
-                            if (!dir.empty()) {
-                                std::string full=dir+"/"+target;
-                                if (access(full.c_str(),X_OK)==0) {
-                                    std::cout<<target<<" is "<<full<<std::endl;
+                            if(!dir.empty()){
+                                std::string full=dir+"/"+t;
+                                if(access(full.c_str(),X_OK)==0){
+                                    std::cout<<t<<" is "<<full<<std::endl;
                                     found=true;
                                     break;
                                 }
                             }
-                            if(end==std::string::npos)break;
+                            if(end==std::string::npos) break;
                             start=end+1;
                         }
                     }
-                    if (!found) std::cerr<<target<<": not found"<<std::endl;
+                    if(!found) std::cerr<<t<<": not found"<<std::endl;
                 }
             }
             goto restore;
         }
 
-        // =================== EXTERNAL EXECUTION ====================
-
         {
             std::vector<char*> args;
-            for (auto&s: parts) args.push_back(strdup(s.c_str()));
+            for(auto&s:parts) args.push_back(strdup(s.c_str()));
             args.push_back(nullptr);
 
-            char* cmd = args[0];
+            char* cmd=args[0];
             bool executed=false;
-            char* pathEnv = getenv("PATH");
+            char* pathEnv=getenv("PATH");
 
-            if (pathEnv) {
+            if(pathEnv){
                 std::string path(pathEnv);
                 size_t start=0;
-                while (true) {
+                while(true){
                     size_t end=path.find(':',start);
                     std::string dir=(end==std::string::npos)?path.substr(start)
                                                             :path.substr(start,end-start);
-                    if (!dir.empty()) {
+                    if(!dir.empty()){
                         std::string full=dir+"/"+cmd;
-                        if (access(full.c_str(),X_OK)==0) {
+                        if(access(full.c_str(),X_OK)==0){
                             pid_t pid=fork();
                             if(pid==0){ execv(full.c_str(),args.data()); exit(1); }
                             else waitpid(pid,nullptr,0);
-
                             executed=true;
                             break;
                         }
                     }
-                    if (end==std::string::npos)break;
+                    if(end==std::string::npos) break;
                     start=end+1;
                 }
             }
 
-            if (!executed)
+            if(!executed)
                 std::cerr<<cmd<<": command not found"<<std::endl;
 
-            for (char*p:args) if(p)free(p);
+            for(char*p:args) if(p) free(p);
         }
 
 restore:
-        if (savedStdout!=-1) { dup2(savedStdout,STDOUT_FILENO); close(savedStdout);}
-        if (savedStderr!=-1) { dup2(savedStderr,STDERR_FILENO); close(savedStderr);}
+        if(savedStdout!=-1) {dup2(savedStdout,STDOUT_FILENO);close(savedStdout);}
+        if(savedStderr!=-1) {dup2(savedStderr,STDERR_FILENO);close(savedStderr);}
         continue;
 
-exit_now:
-        if (savedStdout!=-1){ dup2(savedStdout,STDOUT_FILENO); close(savedStdout);}
-        if (savedStderr!=-1){ dup2(savedStderr,STDERR_FILENO); close(savedStderr);}
+restore_exit:
+        if(savedStdout!=-1) {dup2(savedStdout,STDOUT_FILENO);close(savedStdout);}
+        if(savedStderr!=-1) {dup2(savedStderr,STDERR_FILENO);close(savedStderr);}
         break;
     }
-
-    return 0;
 }
+
+
 
 
 
