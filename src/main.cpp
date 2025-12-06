@@ -10,7 +10,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <stdexcept> 
-#include <filesystem> // Added for file system checks
+#include <filesystem> 
 
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -295,33 +295,48 @@ int tab_handler(int count, int key) {
 }
 
 /**
- * @brief Handles the logic for the history builtin, including listing and file reading.
+ * @brief Handles the logic for the history builtin, including listing, reading (-r), and writing (-w).
  */
 void run_history_builtin(const std::vector<std::string> &parts) {
-    // 1. Handle history -r <path>
+    // 1. Handle history -r <path> (Read)
     if (parts.size() == 3 && parts[1] == "-r") {
         const std::string& path = parts[2];
         
-        // Use read_history_range to append history from the file.
-        // -1, -1 means read the entire file.
+        // read_history_range appends history from the file.
         if (read_history_range(path.c_str(), -1, -1) != 0) {
-            // Error handling, though the tester might not require specific output
             std::cerr << "history: cannot read " << path << std::endl;
         }
         return;
     }
     
-    // 2. Handle history or history <n>
+    // 2. Handle history -w <path> (Write)
+    if (parts.size() == 3 && parts[1] == "-w") {
+        const std::string& path = parts[2];
+
+        // write_history writes all in-memory history to the file, creating it if necessary.
+        if (write_history(path.c_str()) != 0) {
+            std::cerr << "history: cannot write " << path << std::endl;
+        }
+        return;
+    }
+
+    // 3. Handle history or history <n> (List)
     int limit = 0;
-    if (parts.size() == 2 && parts[1] != "-r") {
+    if (parts.size() == 2 && parts[1] != "-r" && parts[1] != "-w") {
         try {
             limit = std::stoi(parts[1]);
         } catch (const std::exception& e) {
-            // Invalid number format, fall through to full list or error
             std::cerr << "history: numeric argument required" << std::endl;
             return;
         }
+    } else if (parts.size() > 1) {
+        // Handle cases where the argument is not -r, -w, or a number
+        if (parts[1] != "-r" && parts[1] != "-w") {
+             std::cerr << "history: invalid option or missing argument" << std::endl;
+             return;
+        }
     }
+
 
     HISTORY_STATE *state = history_get_history_state();
     if (!state) return;
@@ -401,7 +416,8 @@ void run_builtin_child(const std::vector<std::string> &parts) {
     
     // History handling for pipeline/child processes
     if (cmd == "history") {
-        // Pass the full parts vector to the updated builtin function
+        // History commands are not usually run in a pipeline (as they manipulate the parent shell's history)
+        // However, if they are, we run the listing functionality. Read/Write is usually irrelevant in a child process.
         run_history_builtin(parts); 
         _exit(0); 
     }
@@ -777,7 +793,7 @@ int main() {
             continue;
         }
         
-        // Handle history as a non-pipelined builtin (now handles -r and <n>)
+        // Handle history as a non-pipelined builtin (now handles -r and -w)
         if (parts[0] == "history") {
             run_history_builtin(parts);
 
