@@ -85,7 +85,7 @@ void run_history_builtin(const std::vector<std::string>& args) {
         return;
     }
 
-    // listing (optional)
+    // simple listing
     HIST_ENTRY** list = history_list();
     if (!list) return;
     for (int i = 0; list[i]; ++i) {
@@ -144,21 +144,22 @@ void run_pipeline(const std::vector<std::vector<std::string>>& pipeline, const s
         const std::string& cmd = args[0];
 
         if (cmd == "exit") exit(0);
+
         if (cmd == "cd") {
             const char* dir = args.size() > 1 ? args[1].c_str() : getenv("HOME");
             if (!dir || chdir(dir) != 0)
-                std::cerr << "cd: " << (args.size() > 1 ? args[1] : "HOME not set" << '\n';
+                std::cerr << "cd: " << (args.size() > 1 ? args[1] : "HOME not set") << '\n';
             return;
         }
 
-        // Special case: history -a → run builtin + add to history NOW
+        // Special case: history -a file
         if (cmd == "history" && args.size() == 3 && args[1] == "-a") {
-            add_history(original_line.c_str());  // ← ADD BEFORE running!
+            add_history(original_line.c_str());        // add BEFORE append_history sees it
             run_history_builtin(args);
             return;
         }
 
-        // Normal builtins & external
+        // Other builtins & external commands
         pid_t pid = fork();
         if (pid == 0) {
             if (is_builtin(cmd)) exec_builtin_child(args);
@@ -169,14 +170,14 @@ void run_pipeline(const std::vector<std::vector<std::string>>& pipeline, const s
         return;
     }
 
-    // Real pipeline → fork all
+    // Real pipeline
     std::vector<int> fds(2*(n-1));
     for (size_t i = 0; i+1 < n; ++i) pipe(fds.data() + 2*i);
 
     for (size_t i = 0; i < n; ++i) {
         pid_t pid = fork();
         if (pid == 0) {
-            if (i > 0) dup2(fds[2*(i-1)],   STDIN_FILENO);
+            if (i > 0)  dup2(fds[2*(i-1)],   STDIN_FILENO);
             if (i+1 < n) dup2(fds[2*i + 1], STDOUT_FILENO);
             for (int fd : fds) close(fd);
 
@@ -222,7 +223,7 @@ int main() {
         auto tokens = tokenize(line);
         if (tokens.empty()) continue;
 
-        // === Redirection ===
+        // Redirection handling
         std::string out_file, err_file;
         bool append_out = false, append_err = false;
 
@@ -255,7 +256,7 @@ int main() {
             if (fd != -1) { dup2(fd, STDERR_FILENO); close(fd); }
         }
 
-        // === Build pipeline ===
+        // Build pipeline
         std::vector<std::vector<std::string>> pipeline;
         std::vector<std::string> cur;
         for (const auto& t : tokens) {
@@ -265,10 +266,10 @@ int main() {
         }
         if (!cur.empty()) pipeline.push_back(cur);
 
-        // === Execute ===
+        // Execute
         run_pipeline(pipeline, line);
 
-        // === Add to history AFTER everything EXCEPT when we already added it for history -a ===
+        // Add to history (except when we already did it for history -a)
         bool is_history_a = (pipeline.size() == 1 && pipeline[0].size() == 3 &&
                              pipeline[0][0] == "history" && pipeline[0][1] == "-a");
         if (!is_history_a) {
