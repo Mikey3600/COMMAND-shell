@@ -120,6 +120,31 @@ bool is_builtin(const string& cmd) {
            cmd == "cd" || cmd == "type" || cmd == "history";
 }
 
+void load_history_from_file(const string& filename) {
+    int fd = open(filename.c_str(), O_RDONLY);
+    if (fd < 0) {
+        return;
+    }
+    
+    string content;
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof(buf))) > 0) {
+        content.append(buf, n);
+    }
+    close(fd);
+    
+    stringstream ss(content);
+    string line;
+    while (getline(ss, line)) {
+        if (!line.empty()) {
+            add_history(line.c_str());
+            shell_history.push_back(line);
+        }
+    }
+    last_history_flush_index = shell_history.size();
+}
+
 int execute_builtin(const vector<string>& args) {
     if (args.empty()) return 0;
     
@@ -552,6 +577,11 @@ char** command_completion(const char* text, int start, int end) {
 
 int main() {
     rl_attempted_completion_function = command_completion;
+    
+    const char* histfile = getenv("HISTFILE");
+    if (histfile) {
+        load_history_from_file(histfile);
+    }
     
     while (true) {
         char* input = readline("$ ");
