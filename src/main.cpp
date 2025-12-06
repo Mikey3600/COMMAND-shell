@@ -1,16 +1,14 @@
 #include <iostream>
 #include <string>
+#include <sstream>
+#include <vector>
 #include <cstdlib>
 #include <filesystem>
+#include <windows.h>   // Windows process API
+#include <io.h>        // access() equivalent
 
-// Cross-platform compatibility for access() and X_OK
-#ifdef _WIN32
-    #include <io.h>
-    #define access _access
-    #define X_OK 4
-#else
-    #include <unistd.h>
-#endif
+#define access _access
+#define X_OK 4
 
 int main() {
     std::cout << std::unitbuf;
@@ -20,63 +18,44 @@ int main() {
         std::cout << "$ ";
 
         std::string input;
-        if (!std::getline(std::cin, input)) {
-            break;
-        }
+        if (!std::getline(std::cin, input)) break;
 
-        // `exit` builtin
-        if (input == "exit") {
-            break;
-        }
+        // exit builtin
+        if (input == "exit") break;
 
-        // `echo` builtin
+        // echo builtin
         if (input.rfind("echo ", 0) == 0) {
             std::string text = input.substr(5);
             std::cout << text << std::endl;
             continue;
         }
 
-        // `type` builtin
+        // type builtin
         if (input.rfind("type ", 0) == 0) {
             std::string target = input.substr(5);
 
-            // Check if target is a builtin
             if (target == "echo" || target == "exit" || target == "type") {
                 std::cout << target << " is a shell builtin" << std::endl;
                 continue;
             }
 
-            // Search in PATH
             char* pathEnv = std::getenv("PATH");
+            bool found = false;
 
             if (pathEnv != nullptr) {
                 std::string path(pathEnv);
                 size_t start = 0;
-                bool found = false;
 
                 while (true) {
-                    size_t end = path.find(
-#ifdef _WIN32
-                        ';'
-#else
-                        ':'
-#endif
-                        , start);
+                    size_t end = path.find(';', start);
 
                     std::string dir = (end == std::string::npos)
                         ? path.substr(start)
                         : path.substr(start, end - start);
 
                     if (!dir.empty()) {
-                        // Build full path
-                        std::string fullPath =
-#ifdef _WIN32
-                            dir + "\\" + target;
-#else
-                            dir + "/" + target;
-#endif
+                        std::string fullPath = dir + "\\" + target + ".exe";
 
-                        // Check executable permission
                         if (access(fullPath.c_str(), X_OK) == 0) {
                             std::cout << target << " is " << fullPath << std::endl;
                             found = true;
@@ -84,27 +63,66 @@ int main() {
                         }
                     }
 
-                    if (end == std::string::npos) {
-                        break;
-                    }
-
+                    if (end == std::string::npos) break;
                     start = end + 1;
                 }
+            }
 
-                if (!found) {
-                    std::cout << target << ": not found" << std::endl;
-                }
-
-            } else {
+            if (!found) {
                 std::cout << target << ": not found" << std::endl;
             }
 
             continue;
         }
 
-        // Unknown command fallback
-        std::cout << input << ": command not found" << std::endl;
+        // External execution — Windows version
+        // (Works for EXE files; not Linux binaries)
+        std::istringstream iss(input);
+        std::vector<std::string> parts;
+        std::string token;
+        while (iss >> token) parts.push_back(token);
+
+        if (parts.empty()) continue;
+
+        std::string cmd = parts[0];
+        char* pathEnv = std::getenv("PATH");
+        bool executed = false;
+
+        if (pathEnv != nullptr) {
+            std::string path(pathEnv);
+            size_t start = 0;
+
+            while (true) {
+                size_t end = path.find(';', start);
+                std::string dir = (end == std::string::npos)
+                    ? path.substr(start)
+                    : path.substr(start, end - start);
+
+                if (!dir.empty()) {
+                    std::string fullPath = dir + "\\" + cmd + ".exe";
+
+                    if (access(fullPath.c_str(), X_OK) == 0) {
+                        std::string commandLine = fullPath;
+                        for (size_t i = 1; i < parts.size(); i++) {
+                            commandLine += " " + parts[i];
+                        }
+
+                        system(commandLine.c_str());
+                        executed = true;
+                        break;
+                    }
+                }
+
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+        }
+
+        if (!executed) {
+            std::cout << cmd << ": command not found" << std::endl;
+        }
     }
 
     return 0;
 }
+
