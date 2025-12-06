@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <cstring>
 #include <cstdlib>
+#include <dirent.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 
@@ -590,7 +591,6 @@ int main() {
     
     return 0;
 }
-
 
 
 
