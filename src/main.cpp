@@ -1,602 +1,593 @@
 #include <iostream>
-#include <sstream>
-#include <vector>
 #include <string>
-#include <cstring>
-#include <cstdlib>
-#include <cstdio>
+#include <vector>
+#include <sstream>
 #include <unistd.h>
-#include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <dirent.h>
-#include <limits.h>
-#include <algorithm>
-#include <iomanip>
-#include <signal.h>
-#include <errno.h>
-#include <cctype>
-
+#include <cstring>
+#include <cstdlib>
 #include <readline/readline.h>
 #include <readline/history.h>
 
 using namespace std;
 
-struct Redirection {
-    int fd;         // 1 for stdout, 2 for stderr
-    bool append;    // true for >>, false for >
-    string filename;
-};
+vector<string> shell_history;
+size_t last_history_flush_index = 0;
 
-struct Command {
-    vector<string> argv;
-    vector<Redirection> redirs;
-};
-
-static vector<string> shell_history;
-static size_t last_history_flush_index = 0;
-
-static vector<string> builtin_names = {
-    "echo", "exit", "pwd", "cd", "type", "history"
-};
-
-static string shell_prompt = "$ ";
-
-// Forward declarations
-static void execute_line(const string &line);
-static bool is_builtin(const string &cmd);
-static int run_builtin(Command &cmd, bool in_child);
-static void execute_pipeline(vector<Command> &pipeline);
-static vector<string> tokenize(const string &line);
-static vector<Command> parse_pipeline(const vector<string> &tokens);
-static void apply_redirections(const vector<Redirection> &redirs);
-static string find_executable(const string &cmd);
-static void setup_signal_handlers();
-static vector<string> get_path_executables_matching(const string &prefix);
-static string longest_common_prefix(const vector<string> &v);
-static char **shell_completion(const char *text, int start, int end);
-
-/* ---------- Tokenizer ---------- */
-static vector<string> tokenize(const string &line) {
-    vector<string> tokens;
-    string cur;
-    enum Mode { NORMAL, SINGLE_QUOTE, DOUBLE_QUOTE };
-    Mode mode = NORMAL;
-
-    for (size_t i = 0; i < line.size(); ++i) {
-        char c = line[i];
-
-        if (mode == NORMAL) {
-            if (c == '\\') {
-                if (i + 1 < line.size()) cur += line[++i];
-            } else if (c == '\'') {
-                mode = SINGLE_QUOTE;
-            } else if (c == '"') {
-                mode = DOUBLE_QUOTE;
-            } else if (isspace(static_cast<unsigned char>(c))) {
-                if (!cur.empty()) {
-                    tokens.push_back(cur);
-                    cur.clear();
-                }
-            } else if (c == '>') {
-                if (!cur.empty()) {
-                    tokens.push_back(cur);
-                    cur.clear();
-                }
-                if (i + 1 < line.size() && line[i + 1] == '>') {
-                    tokens.push_back(">>");
-                    ++i;
-                } else {
-                    tokens.push_back(">");
-                }
-            } else if (c == '|') {
-                if (!cur.empty()) {
-                    tokens.push_back(cur);
-                    cur.clear();
-                }
-                tokens.push_back("|");
-            } else {
-                cur += c;
-            }
-        } else if (mode == SINGLE_QUOTE) {
-            if (c == '\'') {
-                mode = NORMAL;
-            } else {
-                cur += c;
-            }
-        } else if (mode == DOUBLE_QUOTE) {
-            if (c == '"') {
-                mode = NORMAL;
-            } else if (c == '\\' && i + 1 < line.size()) {
-                cur += line[++i];
-            } else {
-                cur += c;
-            }
-        }
-    }
-    if (!cur.empty()) tokens.push_back(cur);
-    return tokens;
-}
-
-/* ---------- Parser ---------- */
-static vector<Command> parse_pipeline(const vector<string> &tokens) {
-    vector<Command> pipeline;
-    vector<string> current;
-
-    auto flush_command = [&]() {
-        if (current.empty()) return;
-        Command cmd;
-        size_t i = 0;
-        while (i < current.size()) {
-            const string &tok = current[i];
-            if ((tok == "1" || tok == "2") &&
-                i + 2 < current.size() &&
-                (current[i + 1] == ">" || current[i + 1] == ">>")) {
-                Redirection r;
-                r.fd = (tok == "1") ? 1 : 2;
-                r.append = (current[i + 1] == ">>");
-                r.filename = current[i + 2];
-                cmd.redirs.push_back(r);
-                i += 3;
-            } else if ((tok == ">" || tok == ">>") && i + 1 < current.size()) {
-                Redirection r;
-                r.fd = 1;
-                r.append = (tok == ">>");
-                r.filename = current[i + 1];
-                cmd.redirs.push_back(r);
-                i += 2;
-            } else {
-                cmd.argv.push_back(tok);
-                ++i;
-            }
-        }
-        pipeline.push_back(cmd);
-        current.clear();
-    };
-
-    for (const string &t : tokens) {
-        if (t == "|") {
-            flush_command();
-        } else {
-            current.push_back(t);
-        }
-    }
-    flush_command();
-    return pipeline;
-}
-
-/* ---------- Redirection ---------- */
-static void apply_redirections(const vector<Redirection> &redirs) {
-    for (const auto &r : redirs) {
-        int flags = O_WRONLY | O_CREAT | (r.append ? O_APPEND : O_TRUNC);
-        int fd = open(r.filename.c_str(), flags, 0644);
-        if (fd < 0) {
-            perror("open");
+string tokenize_input(const string& input, vector<string>& tokens) {
+    tokens.clear();
+    string current;
+    bool in_single_quote = false;
+    bool in_double_quote = false;
+    bool escape_next = false;
+    
+    for (size_t i = 0; i < input.size(); i++) {
+        char c = input[i];
+        
+        if (escape_next) {
+            current += c;
+            escape_next = false;
             continue;
         }
-        if (dup2(fd, r.fd) < 0) {
-            perror("dup2");
+        
+        if (c == '\\' && !in_single_quote) {
+            escape_next = true;
+            continue;
         }
-        close(fd);
+        
+        if (c == '\'' && !in_double_quote) {
+            in_single_quote = !in_single_quote;
+            continue;
+        }
+        
+        if (c == '"' && !in_single_quote) {
+            in_double_quote = !in_double_quote;
+            continue;
+        }
+        
+        if (!in_single_quote && !in_double_quote && (c == ' ' || c == '\t')) {
+            if (!current.empty()) {
+                tokens.push_back(current);
+                current.clear();
+            }
+            continue;
+        }
+        
+        current += c;
     }
-}
-
-/* ---------- PATH lookup ---------- */
-static string find_executable(const string &cmd) {
-    if (cmd.empty()) return "";
-    if (cmd.find('/') != string::npos) {
-        if (access(cmd.c_str(), X_OK) == 0) return cmd;
-        return "";
+    
+    if (!current.empty()) {
+        tokens.push_back(current);
     }
-    const char *path_env = getenv("PATH");
-    if (!path_env) return "";
-    string path(path_env);
-    stringstream ss(path);
-    string dir;
-    while (getline(ss, dir, ':')) {
-        if (dir.empty()) dir = ".";
-        string full = dir + "/" + cmd;
-        if (access(full.c_str(), X_OK) == 0) return full;
+    
+    if (in_single_quote || in_double_quote) {
+        return "Unclosed quote";
     }
+    
     return "";
 }
 
-/* ---------- Builtins ---------- */
-static bool is_builtin(const string &cmd) {
-    return find(builtin_names.begin(), builtin_names.end(), cmd) != builtin_names.end();
-}
-
-static int builtin_echo(const vector<string> &argv) {
-    for (size_t i = 1; i < argv.size(); ++i) {
-        if (i > 1) cout << " ";
-        cout << argv[i];
+string find_in_path(const string& cmd) {
+    if (cmd.find('/') != string::npos) {
+        if (access(cmd.c_str(), X_OK) == 0) {
+            return cmd;
+        }
+        return "";
     }
-    cout << "\n";
-    return 0;
+    
+    const char* path_env = getenv("PATH");
+    if (!path_env) return "";
+    
+    string path_str(path_env);
+    stringstream ss(path_str);
+    string dir;
+    
+    while (getline(ss, dir, ':')) {
+        string full_path = dir + "/" + cmd;
+        if (access(full_path.c_str(), X_OK) == 0) {
+            return full_path;
+        }
+    }
+    
+    return "";
 }
 
-static int builtin_pwd() {
-    char buf[PATH_MAX];
-    if (!getcwd(buf, sizeof(buf))) {
-        perror("pwd");
+bool is_builtin(const string& cmd) {
+    return cmd == "echo" || cmd == "exit" || cmd == "pwd" || 
+           cmd == "cd" || cmd == "type" || cmd == "history";
+}
+
+int execute_builtin(const vector<string>& args) {
+    if (args.empty()) return 0;
+    
+    const string& cmd = args[0];
+    
+    if (cmd == "echo") {
+        for (size_t i = 1; i < args.size(); i++) {
+            if (i > 1) cout << " ";
+            cout << args[i];
+        }
+        cout << endl;
+        return 0;
+    }
+    
+    if (cmd == "exit") {
+        exit(args.size() > 1 ? atoi(args[1].c_str()) : 0);
+    }
+    
+    if (cmd == "pwd") {
+        char cwd[4096];
+        if (getcwd(cwd, sizeof(cwd))) {
+            cout << cwd << endl;
+            return 0;
+        }
         return 1;
     }
-    cout << buf << "\n";
-    return 0;
-}
-
-static int builtin_cd(const vector<string> &argv) {
-    const char *home = getenv("HOME");
-    string target;
-    if (argv.size() < 2) {
-        if (!home) {
-            cerr << "cd: HOME not set\n";
-            return 1;
-        }
-        target = home;
-    } else {
-        const string &arg = argv[1];
-        if (!arg.empty() && arg[0] == '~') {
+    
+    if (cmd == "cd") {
+        string target;
+        if (args.size() == 1) {
+            const char* home = getenv("HOME");
             if (!home) {
-                cerr << "cd: HOME not set\n";
+                cerr << "cd: HOME not set" << endl;
                 return 1;
             }
-            if (arg.size() == 1) {
-                target = home;
-            } else if (arg[1] == '/') {
-                target = string(home) + arg.substr(1);
-            } else {
-                target = arg; // ~user style, leave unchanged
-            }
+            target = home;
         } else {
-            target = arg;
-        }
-    }
-    if (chdir(target.c_str()) != 0) {
-        perror("cd");
-        return 1;
-    }
-    return 0;
-}
-
-static int builtin_type(const vector<string> &argv) {
-    if (argv.size() < 2) {
-        cerr << "type: usage: type name\n";
-        return 1;
-    }
-    int status = 0;
-    for (size_t i = 1; i < argv.size(); ++i) {
-        const string &name = argv[i];
-        if (is_builtin(name)) {
-            cout << name << " is a shell builtin\n";
-        } else {
-            string path = find_executable(name);
-            if (!path.empty()) {
-                cout << name << " is " << path << "\n";
-            } else {
-                cerr << "type: " << name << ": not found\n";
-                status = 1;
+            target = args[1];
+            if (target[0] == '~') {
+                const char* home = getenv("HOME");
+                if (!home) {
+                    cerr << "cd: HOME not set" << endl;
+                    return 1;
+                }
+                target = string(home) + target.substr(1);
             }
         }
-    }
-    return status;
-}
-
-static int builtin_history(const vector<string> &argv) {
-    // Plain `history`
-    if (argv.size() == 1) {
-        for (size_t i = 0; i < shell_history.size(); ++i) {
-            cout << setw(5) << (i + 1) << "  " << shell_history[i] << "\n";
+        
+        if (chdir(target.c_str()) != 0) {
+            cerr << "cd: " << target << ": No such file or directory" << endl;
+            return 1;
         }
         return 0;
     }
-
-    // history N
-    if (argv.size() == 2) {
-        bool isNum = true;
-        for (char c : argv[1]) {
-            if (!isdigit(static_cast<unsigned char>(c))) {
-                isNum = false;
-                break;
+    
+    if (cmd == "type") {
+        for (size_t i = 1; i < args.size(); i++) {
+            if (is_builtin(args[i])) {
+                cout << args[i] << " is a shell builtin" << endl;
+            } else {
+                string path = find_in_path(args[i]);
+                if (!path.empty()) {
+                    cout << args[i] << " is " << path << endl;
+                } else {
+                    cout << args[i] << ": not found" << endl;
+                }
             }
         }
-        if (isNum) {
-            int n = stoi(argv[1]);
-            if (n <= 0) return 0;
-            size_t total = shell_history.size();
-            size_t start = (n >= static_cast<int>(total)) ? 0 : total - n;
-            for (size_t i = start; i < total; ++i) {
-                cout << setw(5) << (i + 1) << "  " << shell_history[i] << "\n";
+        return 0;
+    }
+    
+    if (cmd == "history") {
+        if (args.size() == 1) {
+            for (size_t i = 0; i < shell_history.size(); i++) {
+                cout << "  " << (i + 1) << "  " << shell_history[i] << endl;
             }
             return 0;
         }
-    }
-
-    // history -a <file> : append new commands since last flush, then ONE empty line
-    if (argv.size() >= 3 && argv[1] == "-a") {
-        const string &file = argv[2];
-        int fd = open(file.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (fd < 0) {
-            perror("history -a");
-            return 1;
-        }
-
-        bool wrote_any = false;
-        for (size_t i = last_history_flush_index; i < shell_history.size(); ++i) {
-            const string &line = shell_history[i];
-            if (write(fd, line.c_str(), line.size()) < 0) perror("write");
-            if (write(fd, "\n", 1) < 0) perror("write");
-            wrote_any = true;
-        }
-
-        // Only write trailing empty line if we actually wrote something new
-        if (wrote_any) {
-            if (write(fd, "\n", 1) < 0) perror("write");
-            last_history_flush_index = shell_history.size();
-        }
-
-        close(fd);
-        return 0;
-    }
-
-    // history -w <file> : overwrite with full history
-    if (argv.size() >= 3 && argv[1] == "-w") {
-        const string &file = argv[2];
-        int fd = open(file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd < 0) {
-            perror("history -w");
-            return 1;
-        }
-        for (const string &line : shell_history) {
-            if (write(fd, line.c_str(), line.size()) < 0) perror("write");
-            if (write(fd, "\n", 1) < 0) perror("write");
-        }
-        close(fd);
-        last_history_flush_index = shell_history.size();
-        return 0;
-    }
-
-    // history -r <file> : read file into memory
-    if (argv.size() >= 3 && argv[1] == "-r") {
-        const string &file = argv[2];
-        int fd = open(file.c_str(), O_RDONLY);
-        if (fd < 0) return 0; // missing file not error
-        FILE *f = fdopen(fd, "r");
-        if (!f) {
-            close(fd);
-            perror("history -r");
-            return 1;
-        }
-        char *line = nullptr;
-        size_t len = 0;
-        ssize_t nread;
-        while ((nread = getline(&line, &len, f)) != -1) {
-            if (nread > 0 && line[nread - 1] == '\n') line[nread - 1] = '\0';
-            string s(line);
-            if (!s.empty()) {
-                shell_history.push_back(s);
-                add_history(s.c_str());
+        
+        if (args[1] == "-r" && args.size() == 3) {
+            int fd = open(args[2].c_str(), O_RDONLY);
+            if (fd < 0) {
+                cerr << "history: cannot read " << args[2] << endl;
+                return 1;
             }
+            
+            string content;
+            char buf[4096];
+            ssize_t n;
+            while ((n = read(fd, buf, sizeof(buf))) > 0) {
+                content.append(buf, n);
+            }
+            close(fd);
+            
+            stringstream ss(content);
+            string line;
+            while (getline(ss, line)) {
+                if (!line.empty()) {
+                    add_history(line.c_str());
+                    shell_history.push_back(line);
+                }
+            }
+            last_history_flush_index = shell_history.size();
+            return 0;
         }
-        if (line) free(line);
-        fclose(f);
-        last_history_flush_index = shell_history.size();
-        return 0;
+        
+        if (args[1] == "-w" && args.size() == 3) {
+            int fd = open(args[2].c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) {
+                cerr << "history: cannot write " << args[2] << endl;
+                return 1;
+            }
+            
+            for (size_t i = 0; i < shell_history.size(); i++) {
+                string line = shell_history[i] + "\n";
+                write(fd, line.c_str(), line.size());
+            }
+            close(fd);
+            last_history_flush_index = shell_history.size();
+            return 0;
+        }
+        
+        if (args[1] == "-a" && args.size() == 3) {
+            if (last_history_flush_index >= shell_history.size()) {
+                return 0;
+            }
+            
+            int fd = open(args[2].c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd < 0) {
+                cerr << "history: cannot write " << args[2] << endl;
+                return 1;
+            }
+            
+            for (size_t i = last_history_flush_index; i < shell_history.size(); i++) {
+                string line = shell_history[i] + "\n";
+                write(fd, line.c_str(), line.size());
+            }
+            write(fd, "\n", 1);
+            close(fd);
+            last_history_flush_index = shell_history.size();
+            return 0;
+        }
+        
+        if (args.size() == 2) {
+            int n = atoi(args[1].c_str());
+            size_t start = 0;
+            if (n > 0 && (size_t)n < shell_history.size()) {
+                start = shell_history.size() - n;
+            }
+            for (size_t i = start; i < shell_history.size(); i++) {
+                cout << "  " << (i + 1) << "  " << shell_history[i] << endl;
+            }
+            return 0;
+        }
+        
+        return 1;
     }
-
-    cerr << "history: unsupported option\n";
-    return 1;
-}
-
-static int run_builtin(Command &cmd, bool in_child) {
-    if (cmd.argv.empty()) return 0;
-    const string &name = cmd.argv[0];
-    if (name == "echo") return builtin_echo(cmd.argv);
-    if (name == "pwd") return builtin_pwd();
-    if (name == "cd") return builtin_cd(cmd.argv);
-    if (name == "type") return builtin_type(cmd.argv);
-    if (name == "history") return builtin_history(cmd.argv);
-    if (name == "exit") {
-        if (in_child) _exit(0);
-        exit(0);
-    }
+    
     return 0;
 }
 
-/* ---------- Execution ---------- */
-static void execute_pipeline(vector<Command> &pipeline) {
-    size_t n = pipeline.size();
-    if (n == 0) return;
+struct Command {
+    vector<string> args;
+    string stdout_file;
+    string stderr_file;
+    bool stdout_append = false;
+    bool stderr_append = false;
+};
 
-    // Single builtin (no pipes) ⇒ run in parent with redirections
-    if (n == 1 && !pipeline[0].argv.empty() && is_builtin(pipeline[0].argv[0])) {
-        int saved_stdout = dup(STDOUT_FILENO);
-        int saved_stderr = dup(STDERR_FILENO);
-        if (saved_stdout < 0 || saved_stderr < 0) {
-            perror("dup");
-            return;
+void parse_redirections(vector<string>& tokens, Command& cmd) {
+    cmd.args.clear();
+    
+    for (size_t i = 0; i < tokens.size(); i++) {
+        if (tokens[i] == ">" || tokens[i] == "1>") {
+            if (i + 1 < tokens.size()) {
+                cmd.stdout_file = tokens[i + 1];
+                cmd.stdout_append = false;
+                i++;
+            }
+        } else if (tokens[i] == ">>" || tokens[i] == "1>>") {
+            if (i + 1 < tokens.size()) {
+                cmd.stdout_file = tokens[i + 1];
+                cmd.stdout_append = true;
+                i++;
+            }
+        } else if (tokens[i] == "2>") {
+            if (i + 1 < tokens.size()) {
+                cmd.stderr_file = tokens[i + 1];
+                cmd.stderr_append = false;
+                i++;
+            }
+        } else if (tokens[i] == "2>>") {
+            if (i + 1 < tokens.size()) {
+                cmd.stderr_file = tokens[i + 1];
+                cmd.stderr_append = true;
+                i++;
+            }
+        } else {
+            cmd.args.push_back(tokens[i]);
         }
-        apply_redirections(pipeline[0].redirs);
-        run_builtin(pipeline[0], false);
-        if (dup2(saved_stdout, STDOUT_FILENO) < 0) perror("dup2");
-        if (dup2(saved_stderr, STDERR_FILENO) < 0) perror("dup2");
-        close(saved_stdout);
-        close(saved_stderr);
-        return;
     }
+}
 
+int execute_external(const vector<string>& args) {
+    if (args.empty()) return 0;
+    
+    string path = find_in_path(args[0]);
+    if (path.empty()) {
+        cerr << args[0] << ": command not found" << endl;
+        return 127;
+    }
+    
+    vector<char*> argv;
+    for (const auto& arg : args) {
+        argv.push_back(const_cast<char*>(arg.c_str()));
+    }
+    argv.push_back(nullptr);
+    
+    execv(path.c_str(), argv.data());
+    cerr << "execv failed" << endl;
+    exit(1);
+}
+
+int execute_command(Command& cmd, int input_fd, int output_fd) {
+    if (cmd.args.empty()) return 0;
+    
+    int saved_stdout = -1;
+    int saved_stderr = -1;
+    
+    if (!cmd.stdout_file.empty()) {
+        saved_stdout = dup(STDOUT_FILENO);
+        int flags = O_WRONLY | O_CREAT;
+        flags |= cmd.stdout_append ? O_APPEND : O_TRUNC;
+        int fd = open(cmd.stdout_file.c_str(), flags, 0644);
+        if (fd < 0) {
+            cerr << "Cannot open " << cmd.stdout_file << endl;
+            if (saved_stdout >= 0) {
+                dup2(saved_stdout, STDOUT_FILENO);
+                close(saved_stdout);
+            }
+            return 1;
+        }
+        dup2(fd, STDOUT_FILENO);
+        close(fd);
+    } else if (output_fd != STDOUT_FILENO) {
+        saved_stdout = dup(STDOUT_FILENO);
+        dup2(output_fd, STDOUT_FILENO);
+    }
+    
+    if (!cmd.stderr_file.empty()) {
+        saved_stderr = dup(STDERR_FILENO);
+        int flags = O_WRONLY | O_CREAT;
+        flags |= cmd.stderr_append ? O_APPEND : O_TRUNC;
+        int fd = open(cmd.stderr_file.c_str(), flags, 0644);
+        if (fd < 0) {
+            cerr << "Cannot open " << cmd.stderr_file << endl;
+            if (saved_stdout >= 0) {
+                dup2(saved_stdout, STDOUT_FILENO);
+                close(saved_stdout);
+            }
+            if (saved_stderr >= 0) {
+                dup2(saved_stderr, STDERR_FILENO);
+                close(saved_stderr);
+            }
+            return 1;
+        }
+        dup2(fd, STDERR_FILENO);
+        close(fd);
+    }
+    
+    if (input_fd != STDIN_FILENO) {
+        dup2(input_fd, STDIN_FILENO);
+    }
+    
+    int result;
+    if (is_builtin(cmd.args[0])) {
+        result = execute_builtin(cmd.args);
+    } else {
+        result = execute_external(cmd.args);
+    }
+    
+    if (saved_stdout >= 0) {
+        dup2(saved_stdout, STDOUT_FILENO);
+        close(saved_stdout);
+    }
+    if (saved_stderr >= 0) {
+        dup2(saved_stderr, STDERR_FILENO);
+        close(saved_stderr);
+    }
+    
+    return result;
+}
+
+int execute_pipeline(vector<Command>& commands) {
+    if (commands.empty()) return 0;
+    
+    if (commands.size() == 1) {
+        if (is_builtin(commands[0].args[0])) {
+            return execute_command(commands[0], STDIN_FILENO, STDOUT_FILENO);
+        }
+    }
+    
     vector<pid_t> pids;
-    vector<int> pipes_fd;
-    if (n > 1) {
-        pipes_fd.resize(2 * (n - 1));
-        for (size_t i = 0; i < n - 1; ++i) {
-            if (pipe(&pipes_fd[2 * i]) < 0) {
-                perror("pipe");
-                return;
+    int prev_pipe_read = STDIN_FILENO;
+    
+    for (size_t i = 0; i < commands.size(); i++) {
+        int pipefd[2];
+        if (i < commands.size() - 1) {
+            if (pipe(pipefd) < 0) {
+                cerr << "pipe failed" << endl;
+                return 1;
             }
         }
-    }
-
-    for (size_t i = 0; i < n; ++i) {
+        
         pid_t pid = fork();
         if (pid < 0) {
-            perror("fork");
-            return;
-        } else if (pid == 0) {
-            // child
-            signal(SIGINT, SIG_DFL);
-            if (n > 1) {
-                if (i > 0) {
-                    dup2(pipes_fd[2 * (i - 1)], STDIN_FILENO);
-                }
-                if (i < n - 1) {
-                    dup2(pipes_fd[2 * i + 1], STDOUT_FILENO);
-                }
-                for (int fd : pipes_fd) close(fd);
-            }
-            apply_redirections(pipeline[i].redirs);
-            if (pipeline[i].argv.empty()) _exit(0);
-            if (is_builtin(pipeline[i].argv[0])) {
-                run_builtin(pipeline[i], true);
-                _exit(0);
-            }
-            vector<char*> argv;
-            for (const string &s : pipeline[i].argv) argv.push_back(const_cast<char*>(s.c_str()));
-            argv.push_back(nullptr);
-            string path = find_executable(pipeline[i].argv[0]);
-            if (path.empty()) {
-                cerr << pipeline[i].argv[0] << ": command not found\n";
-                _exit(127);
-            }
-            execv(path.c_str(), argv.data());
-            perror("execv");
-            _exit(127);
-        } else {
-            pids.push_back(pid);
+            cerr << "fork failed" << endl;
+            return 1;
         }
+        
+        if (pid == 0) {
+            if (prev_pipe_read != STDIN_FILENO) {
+                dup2(prev_pipe_read, STDIN_FILENO);
+                close(prev_pipe_read);
+            }
+            
+            if (i < commands.size() - 1) {
+                close(pipefd[0]);
+                dup2(pipefd[1], STDOUT_FILENO);
+                close(pipefd[1]);
+            }
+            
+            int result = execute_command(commands[i], STDIN_FILENO, STDOUT_FILENO);
+            exit(result);
+        }
+        
+        if (prev_pipe_read != STDIN_FILENO) {
+            close(prev_pipe_read);
+        }
+        
+        if (i < commands.size() - 1) {
+            close(pipefd[1]);
+            prev_pipe_read = pipefd[0];
+        }
+        
+        pids.push_back(pid);
     }
-    if (n > 1) {
-        for (int fd : pipes_fd) close(fd);
-    }
+    
+    int last_status = 0;
     for (pid_t pid : pids) {
-        waitpid(pid, nullptr, 0);
+        int status;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status)) {
+            last_status = WEXITSTATUS(status);
+        }
     }
+    
+    return last_status;
 }
 
-static void execute_line(const string &line) {
-    vector<string> tokens = tokenize(line);
-    if (tokens.empty()) return;
-    vector<Command> pipeline = parse_pipeline(tokens);
-    execute_pipeline(pipeline);
-}
-
-/* ---------- PATH Autocomplete ---------- */
-static vector<string> get_path_executables_matching(const string &prefix) {
-    vector<string> matches;
-    const char *path_env = getenv("PATH");
-    if (!path_env) return matches;
-    string path(path_env);
-    stringstream ss(path);
-    string dir;
-    while (getline(ss, dir, ':')) {
-        if (dir.empty()) dir = ".";
-        DIR *dp = opendir(dir.c_str());
-        if (!dp) continue;
-        dirent *entry;
-        while ((entry = readdir(dp)) != nullptr) {
-            string name(entry->d_name);
-            if (name.rfind(prefix, 0) == 0) {
-                string full = dir + "/" + name;
-                if (access(full.c_str(), X_OK) == 0) {
-                    matches.push_back(name);
+vector<string> get_completions(const string& text) {
+    vector<string> completions;
+    
+    vector<string> builtins = {"echo", "exit", "pwd", "cd", "type", "history"};
+    for (const auto& b : builtins) {
+        if (b.find(text) == 0) {
+            completions.push_back(b);
+        }
+    }
+    
+    const char* path_env = getenv("PATH");
+    if (path_env) {
+        string path_str(path_env);
+        stringstream ss(path_str);
+        string dir;
+        
+        while (getline(ss, dir, ':')) {
+            DIR* dirp = opendir(dir.c_str());
+            if (!dirp) continue;
+            
+            struct dirent* entry;
+            while ((entry = readdir(dirp)) != nullptr) {
+                string name = entry->d_name;
+                if (name.find(text) == 0 && name != "." && name != "..") {
+                    string full_path = dir + "/" + name;
+                    if (access(full_path.c_str(), X_OK) == 0) {
+                        bool found = false;
+                        for (const auto& c : completions) {
+                            if (c == name) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            completions.push_back(name);
+                        }
+                    }
                 }
             }
+            closedir(dirp);
         }
-        closedir(dp);
     }
-    return matches;
+    
+    return completions;
 }
 
-static string longest_common_prefix(const vector<string> &v) {
-    if (v.empty()) return "";
-    string p = v[0];
-    for (size_t i = 1; i < v.size(); ++i) {
-        size_t j = 0;
-        while (j < p.size() && j < v[i].size() && p[j] == v[i][j]) ++j;
-        p = p.substr(0, j);
-        if (p.empty()) break;
+char* completion_generator(const char* text, int state) {
+    static vector<string> matches;
+    static size_t match_index;
+    
+    if (state == 0) {
+        matches = get_completions(text);
+        match_index = 0;
     }
-    return p;
+    
+    if (match_index < matches.size()) {
+        return strdup(matches[match_index++].c_str());
+    }
+    
+    return nullptr;
 }
 
-static char **shell_completion(const char *text, int start, int end) {
-    (void)start;
-    (void)end;
-    vector<string> matches;
-    string prefix(text);
-
-    // Builtins
-    for (const string &b : builtin_names) {
-        if (b.rfind(prefix, 0) == 0) matches.push_back(b);
+char** command_completion(const char* text, int start, int end) {
+    rl_attempted_completion_over = 1;
+    if (start == 0) {
+        return rl_completion_matches(text, completion_generator);
     }
-    // Executables in PATH
-    vector<string> execs = get_path_executables_matching(prefix);
-    matches.insert(matches.end(), execs.begin(), execs.end());
-
-    if (matches.empty()) return nullptr;
-
-    // If exactly one match: complete + add space
-    if (matches.size() == 1) {
-        string add = matches[0].substr(prefix.size());
-        add += " ";
-        rl_insert_text(add.c_str());
-        return nullptr;
-    }
-
-    // Multiple matches ⇒ longest common prefix, NO space
-    string lcp = longest_common_prefix(matches);
-    if (!lcp.empty() && lcp != prefix) {
-        string add = lcp.substr(prefix.size());
-        rl_insert_text(add.c_str());
-        return nullptr;
-    }
-
-    // Otherwise let readline print choices (won't be used by Codecrafters much)
-    char **res = (char **)malloc((matches.size() + 1) * sizeof(char *));
-    for (size_t i = 0; i < matches.size(); ++i) {
-        res[i] = strdup(matches[i].c_str());
-    }
-    res[matches.size()] = nullptr;
-    return res;
+    return nullptr;
 }
 
-/* ---------- Signals ---------- */
-static void setup_signal_handlers() {
-    signal(SIGINT, SIG_IGN);
-}
-
-/* ---------- Main ---------- */
 int main() {
-    setup_signal_handlers();
-    rl_attempted_completion_function = shell_completion;
-
+    rl_attempted_completion_function = command_completion;
+    
     while (true) {
-        char *input = readline(shell_prompt.c_str());
+        char* input = readline("$ ");
+        
         if (!input) {
-            cout << "\n";
+            cout << endl;
             break;
         }
+        
         string line(input);
         free(input);
-        if (line.empty()) continue;
-
-        // record in both our own history + readline's
-        shell_history.push_back(line);
+        
+        if (line.empty()) {
+            continue;
+        }
+        
         add_history(line.c_str());
-
-        execute_line(line);
+        shell_history.push_back(line);
+        
+        vector<string> tokens;
+        string error = tokenize_input(line, tokens);
+        if (!error.empty()) {
+            cerr << "Error: " << error << endl;
+            continue;
+        }
+        
+        if (tokens.empty()) {
+            continue;
+        }
+        
+        vector<vector<string>> pipeline_tokens;
+        vector<string> current_cmd;
+        
+        for (const auto& token : tokens) {
+            if (token == "|") {
+                if (!current_cmd.empty()) {
+                    pipeline_tokens.push_back(current_cmd);
+                    current_cmd.clear();
+                }
+            } else {
+                current_cmd.push_back(token);
+            }
+        }
+        if (!current_cmd.empty()) {
+            pipeline_tokens.push_back(current_cmd);
+        }
+        
+        vector<Command> commands;
+        for (auto& cmd_tokens : pipeline_tokens) {
+            Command cmd;
+            parse_redirections(cmd_tokens, cmd);
+            commands.push_back(cmd);
+        }
+        
+        execute_pipeline(commands);
     }
+    
     return 0;
 }
 
