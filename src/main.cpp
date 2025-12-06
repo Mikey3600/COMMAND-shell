@@ -3,10 +3,9 @@
 #include <cstdlib>
 #include <sstream>
 #include <vector>
-#include <cstring>     // ADD THIS ✔
-#include <unistd.h>    // fork(), execv(), access(), X_OK
+#include <cstring>     // strdup()
+#include <unistd.h>    // fork(), execv(), access(), X_OK, getcwd()
 #include <sys/wait.h>  // waitpid()
-
 
 int main() {
     std::cout << std::unitbuf;
@@ -25,6 +24,15 @@ int main() {
             break;
         }
 
+        // pwd builtin
+        if (input == "pwd") {
+            char buffer[4096];
+            if (getcwd(buffer, sizeof(buffer)) != nullptr) {
+                std::cout << buffer << std::endl;
+            }
+            continue;
+        }
+
         // echo builtin
         if (input.rfind("echo ", 0) == 0) {
             std::string text = input.substr(5);
@@ -37,7 +45,7 @@ int main() {
             std::string target = input.substr(5);
 
             // Builtins
-            if (target == "echo" || target == "exit" || target == "type") {
+            if (target == "echo" || target == "exit" || target == "type" || target == "pwd") {
                 std::cout << target << " is a shell builtin" << std::endl;
                 continue;
             }
@@ -77,7 +85,7 @@ int main() {
             continue;
         }
 
-        // ---------- external command execution ----------
+        // ---------- external program execution ----------
         std::istringstream iss(input);
         std::vector<char*> args;
         std::string token;
@@ -136,4 +144,5 @@ int main() {
 
     return 0;
 }
+
 
